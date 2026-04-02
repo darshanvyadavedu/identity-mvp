@@ -1,0 +1,200 @@
+@startuml Module1_ID_Verification
+
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam sequenceArrowThickness 2
+skinparam roundcorner 8
+skinparam sequenceBoxBackgroundColor #F0F4FF
+skinparam participantBackgroundColor #DBEAFE
+skinparam participantBorderColor #4A9EED
+skinparam noteBackgroundColor #FFF9C4
+skinparam noteBorderColor #F59E0B
+skinparam sequenceGroupBackgroundColor #F3F0FF
+skinparam sequenceGroupBorderColor #8B5CF6
+skinparam databaseBackgroundColor #FFE4E6
+skinparam databaseBorderColor #EF4444
+
+title Module 1 — ID Verification Sequence (DB Writes)\nCloud-Agnostic PostgreSQL | Final DBML Schema
+
+actor       "User"              as USR
+participant "Browser"           as BR
+participant "Backend API"       as BE
+participant "Provider\n(Azure/Onfido/Stripe)" as PRV
+database    "PostgreSQL"        as DB
+
+' ─────────────────────────────────────────
+' STEP 1 — REGISTRATION
+' ─────────────────────────────────────────
+group #DBEAFE "STEP 1 — User Registration"
+  USR  -> BR  : Enter alias + password
+  BR   -> BE  : POST /register\n{alias, password}
+
+  BE   -> BE  : Argon2id(password) → password_hash\nArgon2id(email)   → username_hash
+
+  BE   -> DB  : INSERT users\n──────────────────────\ncustom_username = "john_doe"\nusername_hash   = argon2id(email)\npassword_hash   = argon2id(pwd)\nid_verified     = false\nretry_count     = 0\nlocked_until    = NULL
+  DB  --> BE  : user_id (UUID)
+
+  BE   -> DB  : INSERT audit_logs\n──────────────────\naction = "register"\nentity_type = "users"\nip_address, user_agent
+
+  BE  --> BR  : {user_id, jwt_token}
+end
+
+' ─────────────────────────────────────────
+' STEP 2 — INIT LIVENESS SESSION
+' ─────────────────────────────────────────
+group #E5DBFF "STEP 2 — Init Liveness Session"
+  BR   -> BE  : POST /liveness/init\n{jwt_token}
+
+  BE   -> PRV : createLivenessSession()\n← fetch API key from env/vault
+  PRV --> BE  : {provider_session_id,\nsession_token}
+
+  BE   -> DB  : INSERT verification_sessions\n────────────────────────────\nmodule_type         = 'ID'\nstatus              = 'pending'\ndecision_status     = 'pending'\nprovider            = 'azure'\nprovider_session_id = '<token>'\nretry_count         = 0\nexpires_at          = NOW()+30min
+  DB  --> BE  : session_id (UUID)
+
+  BE   -> DB  : INSERT biometric_checks\n────────────────────────\ncheck_type   = 'liveness'\nstatus       = 'pending'\nprovider     = 'azure'\nattempted_at = NOW()
+  DB  --> BE  : check_id (UUID)
+
+  BE  --> BR  : {session_token, check_id}
+end
+
+' ─────────────────────────────────────────
+' STEP 3 — VIDEO CAPTURE
+' ─────────────────────────────────────────
+group #FFF9C4 "STEP 3 — Video Capture (SDK runs in Browser)"
+  BR   -> PRV : Azure JS SDK loaded with session_token\n3–10s video sent DIRECT to provider\n⚠️  Backend never touched\n⚠️  Raw video NEVER stored in DB
+
+  note over DB
+    No DB writes in this step.
+    Raw biometric data bypasses
+    backend entirely (BIPA compliance).
+  end note
+end
+
+' ─────────────────────────────────────────
+' STEP 4 — LIVENESS RESULT
+' ─────────────────────────────────────────
+group #FFE8CC "STEP 4 — Liveness Result"
+  PRV --> BE  : {verdict, confidence_score,\nfailure_reason, sdk_version}
+
+  BE   -> DB  : INSERT liveness_results\n────────────────────────────────────\ncheck_id         = <check_id>\nverdict          = live|spoofed|\n                   inconclusive|\n                   error|timeout\nconfidence_score = 0.9812\nfailure_reason   = NULL\nsdk_version      = "1.2.3"\nraw_response     = {full JSONB}
+
+  BE   -> DB  : UPDATE biometric_checks\n───────────────────────────\nstatus       = 'passed'|'failed'\ncompleted_at = NOW()
+
+  alt verdict = 'live'
+    BE   -> DB  : UPDATE verification_sessions\n──────────────────────────────\nstatus = 'in_progress'
+    BE  --> BR  : Proceed to document upload
+
+  else verdict = 'inconclusive' (retryable)
+    BE   -> DB  : UPDATE biometric_checks\n──────────────────────\nstatus = 'pending'\nattempted_at = NOW()
+    note right : Poor lighting — NOT a spoof.\nAllow retry without\nincrementing lock counter.
+    BE  --> BR  : Retry prompt (lighting guidance)
+
+  else verdict = 'spoofed'
+    BE   -> DB  : UPDATE users\n──────────────────────────\nretry_count = retry_count + 1
+
+    alt retry_count >= 3
+      BE   -> DB  : UPDATE users\n──────────────────────────────\nlocked_until = NOW() + INTERVAL '24h'
+      BE   -> DB  : UPDATE verification_sessions\n──────────────────────────────\nstatus          = 'failed'\ndecision_status = 'rejected'
+      BE  --> BR  : Account locked 24h
+    else retry_count < 3
+      BE  --> BR  : Retry prompt (max 3 attempts)
+    end
+
+  end
+
+  BE   -> DB  : INSERT audit_logs\n─────────────────────────────\naction    = "liveness"\nmetadata  = {verdict, score,\n             sdk_version, provider}
+end
+
+' ─────────────────────────────────────────
+' STEP 5 — DOCUMENT UPLOAD + OCR
+' ─────────────────────────────────────────
+group #D3F9D8 "STEP 5 — ID Document Upload + OCR"
+  BR   -> BE  : POST /id/upload\n{image: base64, session_id}
+
+  BE   -> DB  : INSERT biometric_checks\n────────────────────────\ncheck_type   = 'doc_scan'\nstatus       = 'pending'\nprovider     = 'azure'\nattempted_at = NOW()
+
+  BE   -> PRV : analyzeDocument(image)\n← passport|drivers_license|national_id
+  PRV --> BE  : {firstName, lastName, DOB,\naddress, idNumber, country,\nexpiryDate, mrzData}
+
+  BE   -> BE  : HMAC-SHA256(idNumber, secret) → id_number_hmac\nAES-256-GCM encrypt each field → extracted_fields JSONB\nValidate expiry_date > NOW()\nValidate issuing_country ISO 3166-1
+
+  BE   -> DB  : INSERT document_scan_results\n──────────────────────────────────────\ndocument_type    = 'passport'\nissuing_country  = 'US'\nid_number_hmac   = hmac(idNo)\nexpiry_date      = 2028-04-15\nmrz_validated    = true\nextracted_fields = {"first_name":\n  "<AES-GCM>", "dob": "<AES-GCM>"}\nraw_response     = {full OCR JSONB}
+
+  BE   -> DB  : UPDATE biometric_checks\n──────────────────────────\nstatus       = 'passed'\ncompleted_at = NOW()
+
+  BE   -> PRV : DELETE raw image from blob storage
+  note right : Raw image deleted immediately.\nNever persisted in DB.
+
+  BE   -> DB  : INSERT audit_logs\n─────────────────\naction = "upload"\nmetadata = {provider,\ndoc_type, country}
+
+  BE  --> BR  : Proceed to face match
+end
+
+' ─────────────────────────────────────────
+' STEP 6 — FACE MATCH
+' ─────────────────────────────────────────
+group #C3FAE8 "STEP 6 — Face Match (Optional)"
+  BE   -> DB  : INSERT biometric_checks\n────────────────────────\ncheck_type   = 'face_match'\nstatus       = 'pending'\nattempted_at = NOW()
+
+  BE   -> PRV : compareFace(\n  source_a: liveness_frame,\n  source_b: id_document_photo\n)
+  PRV --> BE  : {confidence: 0.9750}
+
+  BE   -> BE  : passed = (confidence >= threshold)\nthreshold default = 0.9000
+
+  BE   -> DB  : INSERT face_match_results\n──────────────────────────────────\nconfidence   = 0.9750\nthreshold    = 0.9000\npassed       = true\nsource_a     = "liveness_frame"\nsource_b     = "id_document_photo"\nraw_response = {score JSONB only}\nchecked_at   = NOW()
+
+  note right : threshold stored PER ROW.\nHistorical decisions auditable\nagainst rule in force at the time.\nNo face images ever stored.
+
+  BE   -> DB  : UPDATE biometric_checks\n──────────────────────────\nstatus       = 'passed'\ncompleted_at = NOW()
+
+  alt passed = false
+    BE   -> DB  : UPDATE verification_sessions\n──────────────────────────────\nstatus          = 'failed'\ndecision_status = 'rejected'
+    BE  --> BR  : Fail — restart with matching ID
+  end
+
+  BE   -> DB  : INSERT audit_logs\n───────────────────────────\naction   = "facematch"\nmetadata = {confidence,\n  threshold, passed, provider}
+end
+
+' ─────────────────────────────────────────
+' STEP 7 — CONSENT SCREEN
+' ─────────────────────────────────────────
+group #FFE4E6 "STEP 7 — Consent Screen"
+  BE  --> BR  : Send extracted fields\n{first_name, last_name, dob,\naddress, doc_number, nationality}
+
+  USR  -> BR  : Toggles fields ON/OFF\nClicks confirm
+
+  BR   -> BE  : POST /consent\n{session_id,\nfields: [{name:"first_name", consented:true},\n         {name:"dob", consented:true},\n         {name:"address", consented:false}]}
+
+  BE   -> BE  : Sign consent payload\nwith backend private key → JWT
+
+  loop for each field decision
+    BE   -> DB  : INSERT consent_records\n──────────────────────────────\nfield_name     = "first_name"\nconsented      = true|false\nsigned_payload = <JWT>\nip_address     = x.x.x.x\nuser_agent     = "Chrome/..."\nconsented_at   = NOW()
+    note right : Immutable. Append-only.\nNo UPDATE or DELETE ever.\nRLS: INSERT only.\nsigned_payload = non-repudiation.
+  end
+
+  BE   -> DB  : INSERT audit_logs\n───────────────────────────\naction = "consent"\nmetadata = {fields_count,\nconsented_count, declined_count}
+end
+
+' ─────────────────────────────────────────
+' STEP 8 — SECURE STORAGE + CLEANUP
+' ─────────────────────────────────────────
+group #D3F9D8 "STEP 8 — Secure Storage + Cleanup"
+  loop for each consented field only
+    BE   -> DB  : INSERT verified_data\n────────────────────────────────────────\nfield_name          = "first_name"\nencrypted_value     = AES-256-GCM(value)\nencryption_iv       = <12-byte random nonce>\nverification_method = "azure_doc_intelligence"\nconsent_id          = <consent_record_uuid>\nverified_at         = NOW()\nexpires_at          = NULL\nrevoked_at          = NULL
+    note right : Per-field IV (unique nonce per row).\nDB never sees plaintext PII.\nconsent_id FK = unbreakable\naudit chain to consent record.
+  end
+
+  BE   -> DB  : UPDATE users\n──────────────────────\nid_verified = true\nupdated_at  = NOW()
+
+  BE   -> DB  : UPDATE verification_sessions\n──────────────────────────────\nstatus          = 'complete'\ndecision_status = 'approved'\ncompleted_at    = NOW()
+
+  BE   -> PRV : DELETE liveness session data\n(Azure auto-deletes within 24h)
+
+  BE   -> DB  : INSERT audit_logs\n─────────────────────────────────\naction   = "verification_complete"\nmetadata = {fields_stored,\n  decision: "approved", provider}
+
+  BE  --> BR  : { status: "verified",\n  badge: "ID_VERIFIED",\n  verified_at: "2026-03-30T..." }
+
+  BR  --> USR : ID Verified badge shown\non dashboard
+end
+
+@enduml

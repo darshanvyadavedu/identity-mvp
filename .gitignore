@@ -1,0 +1,21 @@
+# Environment — never commit secrets
+.env
+frontend/.env
+frontend/.env.local
+
+# Go build artifacts
+user-authentication
+*.exe
+
+# Frontend build output
+frontend/dist/
+frontend/node_modules/
+frontend/.npmrc
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

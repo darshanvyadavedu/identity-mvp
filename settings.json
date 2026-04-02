@@ -1,0 +1,6 @@
+{
+  "go.useLanguageServer": true,
+  "go.formatTool": "gofmt",
+  "editor.formatOnSave": true,
+  "go.toolsManagement.autoUpdate": true
+}

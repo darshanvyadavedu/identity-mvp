@@ -1,0 +1,1 @@
+export declare const STATIC_VIDEO_CONSTRAINTS: MediaTrackConstraints;
