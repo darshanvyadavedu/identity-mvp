@@ -1,0 +1,109 @@
+@startuml
+title ID Verification Flow with DB State (FINAL MVP - AWS)
+
+actor User
+participant "Frontend (React / RN)" as FE
+participant "Backend (Go API)" as BE
+participant "AWS Rekognition" as FACE
+participant "Document AI (OCR)" as DOC
+database "PostgreSQL" as DB
+
+== Start Verification ==
+
+User -> FE: Click "Start Verification"
+FE -> BE: POST /start-verification
+
+BE -> DB: INSERT verification_sessions\n(status=pending, module_type=ID)
+BE --> FE: sessionId
+
+== Liveness Session Init ==
+
+FE -> BE: GET /liveness/session
+
+BE -> FACE: Create Liveness Session
+FACE --> BE: sessionId + authToken
+
+BE -> DB: UPDATE verification_sessions\n(provider='aws', provider_session_id, status=in_progress)
+BE --> FE: authToken
+
+== Create Liveness Check ==
+
+BE -> DB: INSERT biometric_checks\n(check_type=liveness, status=pending)
+
+== Liveness Capture ==
+
+FE -> FACE: Start SDK (video capture)
+FACE --> FACE: Process video
+
+== Liveness Result ==
+
+BE -> FACE: GET /liveness/result
+FACE --> BE: verdict + confidence
+
+BE -> DB: UPDATE biometric_checks\n(status=passed, completed_at)
+BE -> DB: INSERT liveness_results\n(verdict, confidence_score)
+
+== Document Upload ==
+
+User -> FE: Upload ID
+FE -> BE: POST /upload-id
+
+BE -> DB: INSERT biometric_checks\n(check_type=doc_scan)
+
+BE -> DOC: Analyze Document
+DOC --> BE: Extracted fields JSON
+
+BE -> BE: Normalize fields (name, dob, doc_number)
+
+BE -> DB: INSERT document_scan_results\n(extracted_fields, doc_type)
+
+== Face Match ==
+
+BE -> DB: INSERT biometric_checks\n(check_type=face_match)
+
+BE -> FACE: Compare Faces
+FACE --> BE: confidence + result
+
+BE -> DB: INSERT face_match_results\n(confidence, passed)
+BE -> DB: UPDATE biometric_checks\n(status=passed)
+
+== Decision Engine ==
+
+BE -> DB: SELECT all checks
+
+alt All checks passed (liveness + face_match)
+
+    == 🔥 Identity Hashing (CORE) ==
+
+    BE -> BE: Generate hashes\n(SHA256 / HMAC)
+    BE -> DB: INSERT identity_hashes\n(field_name, hash_value)
+
+    BE -> DB: UPDATE verification_sessions\n(status=complete, completed_at)
+    BE -> DB: UPDATE users\n(id_verified=true)
+
+    BE --> FE: Show extracted fields (consent UI)
+
+else Any check failed
+
+    BE -> DB: UPDATE verification_sessions\n(status=failed)
+    BE --> FE: Show error + retry
+
+end
+
+== Consent ==
+
+User -> FE: Select fields
+FE -> BE: POST /consent
+
+BE -> DB: INSERT consent_records\n(field_name, consented=true/false)
+
+== Final Storage ==
+
+BE -> DB: INSERT verified_data\n(AES encrypted, only consented fields)
+
+== Cleanup ==
+
+BE -> DB: Expire session / cleanup temp data
+BE --> FE: Verification Success
+
+@enduml

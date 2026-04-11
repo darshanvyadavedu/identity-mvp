@@ -1,0 +1,20 @@
+1. backend  -->azure -- returns --> sessiontolken , authtoken
+2. load sdk with authtoken
+3. poll the result
+
+
+1. AWS SESSION CREATE(START VERIFICATION) :- SESSION ID
+2. SESSION ID FRONTEND SDK LOAD CAPTURE VIDEO
+3. FETCH RESULT WITH SESSION ID
+4. DOCUMENT UPLOAD
+5. TEXT EXTRACT
+6. FACE MATCH
+
+
+
+1. no context between the claude session in the same computer ---
+2. no chats history between the claude  in different computer in same account
+3. Instead of Claude reading all files every time, what can we do  --👉 Sourcegraph,LlamaIndex ,2. Claude-specific ecosystem 👉 MCP (Model Context Protocol)
+4. dashboard for claude usage
+5. claude.md file  structure
+6.

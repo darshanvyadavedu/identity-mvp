@@ -1,0 +1,264 @@
+// ============================================================
+//  Identity Verification Platform
+//  Module 1 — ID Verification (MVP)
+//  Database: PostgreSQL
+//  Privacy: No plaintext PII. Argon2id hashes. AES-256-GCM.
+//  Version: Final
+// ============================================================
+
+Project identity_verification {
+  database_type: 'PostgreSQL'
+  Note: 'MVP – ID Verification. Privacy-first. No plaintext PII. Re-auth via identity_hashes.'
+}
+
+// ─── ENUMS ──────────────────────────────────────────────────
+
+
+Enum module_type_enum {
+  ID
+  ADDRESS
+  SALARY
+  PROFESSION
+}
+Enum session_status_enum {
+  pending
+  in_progress
+  complete
+  failed
+}
+
+Enum decision_status_enum {
+  pending       [note: 'Checks still in progress']
+  approved      [note: 'All checks passed threshold']
+  rejected      [note: 'One or more checks failed hard threshold']
+  manual_review [note: 'Soft threshold — requires human review']
+}
+
+Enum check_type_enum {
+  liveness
+  doc_scan
+  face_match
+}
+
+Enum check_status_enum {
+  pending
+  passed
+  failed
+}
+
+Enum liveness_verdict_enum {
+  live
+  spoofed
+  inconclusive [note: 'Retryable — poor lighting or incomplete head movement']
+  error
+  timeout
+}
+
+Enum document_type_enum {
+  passport
+  drivers_license
+  national_id
+}
+
+Enum hash_algo_enum {
+  sha256
+  hmac_sha256
+}
+
+// ─── USERS ──────────────────────────────────────────────────
+
+Table users {
+  user_id         uuid        [pk, default: `gen_random_uuid()`]
+  custom_username text        [unique, not null,  note: 'Plain-text public alias chosen by user']
+  username_hash   text        [not null,           note: 'Argon2id hash — used for lookup without storing real username']
+  password_hash   text        [not null,           note: 'Argon2id hash; separate salt per user']
+  email      text        [not null,           note: 'Argon2id hash — never store email in plain text']
+  id_verified     boolean     [not null, default: false]
+  retry_count     int         [not null, default: 0,   note: 'Increments on each failed liveness attempt']
+  locked_until    timestamptz [null,                    note: 'Set to now()+24h after 3 consecutive failed attempts']
+  created_at      timestamptz [not null, default: `now()`]
+  updated_at      timestamptz [not null, default: `now()`]
+
+  Note: 'No PII stored in plain text. Argon2id hashes only.'
+}
+
+// ─── VERIFICATION SESSIONS ───────────────────────────────────
+
+Table verification_sessions {
+  session_id          uuid                 [pk, default: `gen_random_uuid()`]
+  user_id             uuid                 [not null, ref: > users.user_id]
+  module_type         module_type_enum     [not null, default: 'ID']
+  status              session_status_enum  [not null, default: 'pending']
+  decision_status     decision_status_enum [not null, default: 'pending']
+  provider            text                 [not null, note: 'azure | onfido | aws — vendor for this session']
+  provider_session_id text                 [null,     note: 'Vendor opaque session ref — used for support and audit trace']
+  retry_count         int                  [not null, default: 0]
+  expires_at          timestamptz          [null]
+  created_at          timestamptz          [not null, default: `now()`]
+  completed_at        timestamptz          [null]
+
+  indexes {
+    (user_id)         [name: 'idx_sessions_user_id']
+    (status)          [name: 'idx_sessions_status']
+    (decision_status) [name: 'idx_sessions_decision_status']
+    (provider)        [name: 'idx_sessions_provider']
+  }
+
+  Note: 'Provider ownership lives here. One session = one vendor. All checks in a session share the same provider.'
+}
+
+// ─── BIOMETRIC CHECK ENGINE ──────────────────────────────────
+
+Table biometric_checks {
+  check_id     uuid              [pk, default: `gen_random_uuid()`]
+  session_id   uuid              [not null, ref: > verification_sessions.session_id]
+  user_id      uuid              [not null, ref: > users.user_id, note: 'Denormalized for fast user-level queries']
+  check_type   check_type_enum   [not null]
+  status       check_status_enum [not null, default: 'pending']
+  attempted_at timestamptz       [null]
+  completed_at timestamptz       [null]
+
+  indexes {
+    (session_id)             [name: 'idx_checks_session_id']
+    (user_id)                [name: 'idx_checks_user_id']
+    (session_id, check_type) [unique, name: 'uq_checks_session_check_type']
+  }
+
+  Note: 'Polymorphic parent for liveness, doc_scan, face_match. UNIQUE(session_id, check_type) enforces one check per type per session. Provider context lives on verification_sessions — not here.'
+}
+
+// ─── LIVENESS RESULTS ────────────────────────────────────────
+
+Table liveness_results {
+  result_id        uuid                  [pk, default: `gen_random_uuid()`]
+  check_id         uuid                  [unique, not null, ref: - biometric_checks.check_id]
+  verdict          liveness_verdict_enum [not null]
+  confidence_score numeric(5,4)          [null,  note: '0.0000 – 1.0000']
+  failure_reason   text                  [null,  note: 'spoof_detected | timeout | poor_lighting | inconclusive']
+  sdk_version      text                  [null,  note: 'Provider SDK version — required for compliance audits and regression debugging']
+  raw_response     jsonb                 [null,  note: 'Full provider JSON — no biometric images stored']
+  created_at       timestamptz           [not null, default: `now()`]
+
+  Note: '1:1 with biometric_checks. No video or image data ever stored on platform servers.'
+}
+
+// ─── DOCUMENT SCAN RESULTS ───────────────────────────────────
+
+Table document_scan_results {
+  scan_id          uuid               [pk, default: `gen_random_uuid()`]
+  check_id         uuid               [unique, not null, ref: - biometric_checks.check_id]
+  document_type    document_type_enum [not null]
+  issuing_country  char(2)            [null,  note: 'ISO 3166-1 alpha-2 — e.g. US, IN, GB']
+  id_number_hmac   text               [null,  note: 'HMAC-SHA256 only — never reversible. Used for uniqueness checks only.']
+  expiry_date      date               [null]
+  mrz_validated    boolean            [not null, default: false, note: 'Machine Readable Zone validation (passports)']
+  extracted_fields jsonb              [null,  note: 'AES-256-GCM encrypted map: {"first_name": "<ciphertext>", "dob": "<ciphertext>"}']
+  raw_response     jsonb              [null,  note: 'Full OCR provider JSON response']
+  scanned_at       timestamptz        [not null, default: `now()`]
+
+  indexes {
+    (check_id) [name: 'idx_doc_scans_check_id']
+  }
+
+  Note: 'All PII fields AES-256-GCM encrypted at app layer before storage. Raw ID image discarded immediately after extraction.'
+}
+
+// ─── FACE MATCH RESULTS ──────────────────────────────────────
+
+Table face_match_results {
+  match_id     uuid         [pk, default: `gen_random_uuid()`]
+  check_id     uuid         [unique, not null, ref: - biometric_checks.check_id]
+  confidence   numeric(5,4) [not null, note: '0.0000 – 1.0000, e.g. 0.9750']
+  threshold    numeric(5,4) [not null, default: 0.9000, note: 'Stored per-row to audit historical decisions against threshold in force at the time']
+  passed       boolean      [not null]
+  source_a     text         [null, note: 'liveness_frame — audit label only, no image stored']
+  source_b     text         [null, note: 'id_document_photo — audit label only, no image stored']
+  raw_response jsonb        [null, note: 'Score + verdict only. No face images ever stored.']
+  checked_at   timestamptz  [not null, default: `now()`]
+
+  Note: 'No face images stored. source_a/source_b are reference labels for audit trail only.'
+}
+
+// ─── IDENTITY HASHES — CORE RE-AUTH ──────────────────────────
+
+Table identity_hashes {
+  hash_id    uuid           [pk, default: `gen_random_uuid()`]
+  user_id    uuid           [not null, ref: > users.user_id]
+  field_name text           [not null, note: 'name | dob | doc_number']
+  hash_value text           [not null]
+  hash_algo  hash_algo_enum [not null]
+  created_at timestamptz    [not null, default: `now()`]
+
+  indexes {
+    (user_id, field_name)    [name: 'idx_ihashes_user_field']
+    (field_name, hash_value) [name: 'idx_ihashes_lookup']
+  }
+
+  Note: 'CORE RE-AUTH TABLE. No plaintext identity stored. Re-auth flow: re-run ID check → hash fresh values → compare against stored hashes.'
+}
+
+// ─── CONSENT RECORDS (MVP+) ───────────────────────────────────
+
+Table consent_records {
+  consent_id     uuid        [pk, default: `gen_random_uuid()`]
+  user_id        uuid        [not null, ref: > users.user_id]
+  session_id     uuid        [not null, ref: > verification_sessions.session_id]
+  field_name     text        [not null, note: 'first_name | last_name | dob | address | doc_number | nationality']
+  consented      boolean     [not null, note: 'true = agreed to store; false = explicitly declined']
+  signed_payload text        [null,     note: 'JWT signed by backend private key — non-repudiation']
+  ip_address     inet        [null]
+  user_agent     text        [null]
+  consented_at   timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id)    [name: 'idx_consent_user_id']
+    (session_id) [name: 'idx_consent_session_id']
+  }
+
+  Note: 'Append-only. No UPDATE or DELETE ever. One row per field per consent decision.'
+}
+
+// ─── VERIFIED DATA (MVP+) ─────────────────────────────────────
+
+Table verified_data {
+  data_id             uuid        [pk, default: `gen_random_uuid()`]
+  user_id             uuid        [not null, ref: > users.user_id]
+  session_id          uuid        [not null, ref: > verification_sessions.session_id]
+  consent_id          uuid        [not null, ref: > consent_records.consent_id]
+  field_name          text        [not null]
+  encrypted_value     text        [not null, note: 'AES-256-GCM ciphertext (base64-encoded)']
+  encryption_iv       text        [not null, note: '12-byte random nonce (base64-encoded) — unique per field per record']
+  verification_method text        [null,     note: 'azure_doc_intelligence | manual']
+  verified_at         timestamptz [not null, default: `now()`]
+  expires_at          timestamptz [null,     note: 'Nullable — some fields require periodic re-verification']
+  revoked_at          timestamptz [null,     note: 'NULL = active. Non-null = user withdrew consent.']
+
+  indexes {
+    (user_id)    [name: 'idx_verified_user_id']
+    (session_id) [name: 'idx_verified_session_id']
+    (consent_id) [name: 'idx_verified_consent_id']
+  }
+
+  Note: 'AES-256-GCM. Per-field IV. Only populated after explicit user consent. DB never sees plaintext PII.'
+}
+
+// ─── AUDIT LOGS ───────────────────────────────────────────────
+
+Table audit_logs {
+  log_id      uuid        [pk, default: `gen_random_uuid()`]
+  user_id     uuid        [null, ref: > users.user_id, note: 'Nullable — some events have no user context']
+  action      text        [not null, note: 'register | liveness | doc_scan | face_match | consent | hash_stored | revoke | lock']
+  entity_type text        [null,     note: 'verification_sessions | biometric_checks | identity_hashes | verified_data']
+  entity_id   uuid        [null]
+  ip_address  inet        [null]
+  metadata    jsonb       [null,     note: 'Contextual data per action: {provider, score, decision, sdk_version, verdict}']
+  created_at  timestamptz [not null, default: `now()`]
+
+  indexes {
+    (user_id)    [name: 'idx_audit_user_id']
+    (action)     [name: 'idx_audit_action']
+    (created_at) [name: 'idx_audit_created_at']
+  }
+
+  Note: 'Append-only. Tracks every sensitive action. Never UPDATE or DELETE.'
+}

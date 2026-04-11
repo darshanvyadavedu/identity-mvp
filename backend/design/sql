@@ -1,0 +1,177 @@
+-- Enable UUID generation
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ================= USERS =================
+
+CREATE TABLE users (
+    user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    custom_username VARCHAR(100) UNIQUE NOT NULL,
+    username_hash VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+
+    id_verified BOOLEAN DEFAULT FALSE,
+    retry_count INT DEFAULT 0,
+    locked_until TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ================= VERIFICATION SESSIONS =================
+
+CREATE TABLE verification_sessions (
+    session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+
+    module_type VARCHAR(50) DEFAULT 'ID',
+    status VARCHAR(50) DEFAULT 'pending',
+    decision_status VARCHAR(50) DEFAULT 'pending',
+
+    provider VARCHAR(50),
+    provider_session_id VARCHAR(255),
+
+    retry_count INT DEFAULT 0,
+    expires_at TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_sessions_user_id ON verification_sessions(user_id);
+CREATE INDEX idx_sessions_status ON verification_sessions(status);
+
+-- ================= BIOMETRIC CHECKS =================
+-- Deleting a verification_session cascades into biometric_checks.
+
+CREATE TABLE biometric_checks (
+    check_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES verification_sessions(session_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+
+    check_type VARCHAR(50) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+
+    attempted_at TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+
+    UNIQUE(session_id, check_type)
+);
+
+CREATE INDEX idx_checks_user_id ON biometric_checks(user_id);
+
+-- ================= LIVENESS RESULTS =================
+-- Deleting a biometric_check cascades into liveness_results.
+
+CREATE TABLE liveness_results (
+    result_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    check_id UUID UNIQUE NOT NULL REFERENCES biometric_checks(check_id) ON DELETE CASCADE,
+
+    verdict VARCHAR(50) NOT NULL,
+    confidence_score NUMERIC(5,4),
+
+    failure_reason VARCHAR(255),
+    sdk_version VARCHAR(50),
+    reference_image TEXT,
+    raw_response JSONB,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ================= DOCUMENT SCAN =================
+-- Deleting a biometric_check cascades into document_scan_results.
+
+CREATE TABLE document_scan_results (
+    scan_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    check_id UUID UNIQUE NOT NULL REFERENCES biometric_checks(check_id) ON DELETE CASCADE,
+
+    document_type VARCHAR(50),
+    issuing_country VARCHAR(50),
+    id_number_hmac VARCHAR(255),
+
+    extracted_fields JSONB,
+    raw_response JSONB,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ================= FACE MATCH =================
+-- Deleting a biometric_check cascades into face_match_results.
+
+CREATE TABLE face_match_results (
+    match_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    check_id UUID UNIQUE NOT NULL REFERENCES biometric_checks(check_id) ON DELETE CASCADE,
+
+    confidence NUMERIC(5,4),
+    threshold NUMERIC(5,4) DEFAULT 0.9000,
+    passed BOOLEAN,
+    source_a VARCHAR(50),
+    source_b VARCHAR(50),
+    raw_response JSONB,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ================= IDENTITY HASHES =================
+
+CREATE TABLE identity_hashes (
+    hash_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+
+    field_name VARCHAR(50) NOT NULL,
+    hash_value VARCHAR(255) NOT NULL,
+    hash_algo VARCHAR(50) NOT NULL,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+
+    UNIQUE(user_id, field_name, hash_value)
+);
+
+CREATE INDEX idx_ihashes_lookup ON identity_hashes(field_name, hash_value);
+
+-- ================= CONSENT =================
+
+CREATE TABLE consent_records (
+    consent_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id UUID REFERENCES verification_sessions(session_id) ON DELETE CASCADE,
+
+    field_name VARCHAR(100),
+    consented BOOLEAN,
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ================= VERIFIED DATA =================
+
+CREATE TABLE verified_data (
+    data_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id UUID REFERENCES verification_sessions(session_id) ON DELETE CASCADE,
+    consent_id UUID REFERENCES consent_records(consent_id) ON DELETE CASCADE,
+    field_name VARCHAR(100),
+    encrypted_value TEXT,
+    encryption_iv VARCHAR(255),
+
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ================= AUDIT LOGS =================
+-- No foreign keys — audit rows must survive even if related records are deleted.
+
+CREATE TABLE audit_logs (
+    log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID,
+    action VARCHAR(255) NOT NULL,
+    session_id UUID,
+    details JSONB,
+    created_at TIMESTAMPTZ DEFAULT now()
+);

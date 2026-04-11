@@ -13,7 +13,7 @@ async function credentialProvider() {
   };
 }
 
-export function LivenessCapture({ sessionId, onComplete, onCancel, onError }) {
+export function LivenessCapture({ providerSessionId, onComplete, onCancel, onError }) {
   const timerRef     = useRef(null);
   const completedRef = useRef(false);
 
@@ -50,7 +50,7 @@ export function LivenessCapture({ sessionId, onComplete, onCancel, onError }) {
 
   return (
     <FaceLivenessDetector
-      sessionId={sessionId}
+      sessionId={providerSessionId}
       region={REGION}
       onAnalysisComplete={handleComplete}
       onError={handleError}
