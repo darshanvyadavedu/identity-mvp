@@ -20,9 +20,11 @@ import (
 
 func main() {
 	// Connect to PostgreSQL (database: identification).
-	_ = godotenv.Load("/Users/ayushwgadre/personal-projects/user-authentication/.env")
+	// Load .env from project root (one level up from backend/)
+	if err := godotenv.Load("../.env"); err != nil {
+		_ = godotenv.Load(".env") // fallback if run from backend/
+	}
 	db.Connect()
-	//_ = godotenv.Load(".env") // fallback if run from backend/
 	// AWS SDK.
 	region := getenv("AWS_REGION", "us-east-1")
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(region))
