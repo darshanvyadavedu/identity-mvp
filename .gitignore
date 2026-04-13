@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!frontend/.env
 
 # Go
 backend/vendor/
@@ -15,6 +16,9 @@ frontend/dist/
 
 # Test artifacts
 textract-test/raw_response.json
+
+# Local config (never commit)
+.claude/
 
 # IDE
 .vscode/
