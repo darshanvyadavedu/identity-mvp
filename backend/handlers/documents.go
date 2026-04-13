@@ -141,7 +141,22 @@ func UploadDocument(rekClient *rekognition.Client, txtClient *textract.Client) h
 		}
 		db.DB.Create(&docScanResult)
 
-		// 5. Face match — Rekognition CompareFaces.
+		// 5. Early duplicate check: name+DOB hash.
+		if docData.FirstName != "" && docData.DOB != "" {
+			combo := docData.FirstName + "|" + docData.DOB
+			nameDOBHash := computeHMAC(combo, os.Getenv("HMAC_SECRET"))
+			var existing models.IdentityHash
+			if err := db.DB.Where("field_name = ? AND hash_value = ?", "first_name_dob", nameDOBHash).
+				First(&existing).Error; err == nil && existing.UserID != userID {
+				WriteJSON(w, http.StatusConflict, map[string]any{
+					"duplicate": true,
+					"message":   "Identity already exists: this document's name and date of birth are linked to another account.",
+				})
+				return
+			}
+		}
+
+		// 6. Face match — Rekognition CompareFaces.
 		var fmAttempts int64
 		db.DB.Model(&models.BiometricCheck{}).
 			Where("session_id = ? AND check_type = ?", internalSessionID, "face_match").

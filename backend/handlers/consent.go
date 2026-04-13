@@ -225,10 +225,14 @@ func StoreConsent(rekClient *rekognition.Client) httprouter.Handle {
 		}
 		if extracted.FirstName != "" && extracted.DOB != "" {
 			combo := extracted.FirstName + "|" + extracted.DOB
+			hash := computeHMAC(combo, hmacSecret)
+			// Delete any existing first_name_dob hash for this user before writing,
+			// so exactly one row ever exists per user.
+			db.DB.Where("user_id = ? AND field_name = ?", userID, "first_name_dob").Delete(&models.IdentityHash{})
 			db.DB.Create(&models.IdentityHash{
 				UserID:    userID,
 				FieldName: "first_name_dob",
-				HashValue: computeHMAC(combo, hmacSecret),
+				HashValue: hash,
 				HashAlgo:  "hmac-sha256",
 			})
 		}

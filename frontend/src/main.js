@@ -12,7 +12,7 @@ const authHeaders = () => ({ "X-User-ID": USER_ID });
 
 // ── State ──────────────────────────────────────────────────────────────────
 // idle | creating | capturing | polling | liveness_done |
-// uploading | processing_doc | consenting | storing_consent | verified | error
+// uploading | processing_doc | consenting | storing_consent | verified | duplicate | error
 let appState        = "idle";
 let appError        = null;
 let sessionId       = null;   // our internal UUID
@@ -282,6 +282,19 @@ function render() {
       break;
     }
 
+    // ── Duplicate ───────────────────────────────────────────────────────────
+    case "duplicate":
+      cardContent.innerHTML = `
+        <div style="font-size:3rem;margin-bottom:12px;">🚫</div>
+        <h2 style="margin:0 0 8px;font-size:1.2rem;color:#dc2626;">Identity Already Exists</h2>
+        <p style="color:#6b7280;font-size:.9rem;margin:0 0 24px;">
+          The identity on this document (name + date of birth) is already linked to another account.
+          Each document identity can only verify one account.
+        </p>
+        <button onclick="window.__reset()" style="${btn("#6b7280")}">Start Over</button>
+      `;
+      break;
+
     // ── Error ───────────────────────────────────────────────────────────────
     case "error":
       cardContent.innerHTML = `
@@ -345,6 +358,10 @@ async function apiUploadDocument(sid, file) {
     headers: authHeaders(), // no Content-Type — browser sets multipart boundary
     body: fd,
   });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => ({}));
+    throw Object.assign(new Error(body.message || "Duplicate identity detected."), { duplicate: true });
+  }
   if (!res.ok) throw new Error(`Document upload failed (${res.status}): ${await res.text()}`);
   return res.json();
 }
@@ -428,7 +445,8 @@ async function submitDoc() {
     }
     render();
   } catch (e) {
-    appError = e.message; appState = "error"; render();
+    if (e.duplicate) { appState = "duplicate"; render(); }
+    else { appError = e.message; appState = "error"; render(); }
   }
 }
 
