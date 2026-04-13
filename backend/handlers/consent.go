@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -11,20 +12,28 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"user-authentication/db"
 	"user-authentication/models"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/rekognition"
+	rektypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
 	"github.com/julienschmidt/httprouter"
 )
 
 // POST /api/sessions/:sessionId/consent
 // Header: X-User-ID: <uuid>
-// Body:   { "fields": ["first_name", "last_name", "dob", "doc_number", "expiry_date", "issuing_country"] }
+// Body:   { "fields": ["first_name", "last_name", "dob", "doc_number", "expiry_date", "issuing_country", "address"] }
 //
-// Takes user consent, checks for duplicate documents across accounts,
-// stores encrypted verified_data, consent_records, and identity_hashes.
-func StoreConsent() httprouter.Handle {
+// 1. Validate session is verified.
+// 2. Duplicate check: HMAC of doc_number across accounts.
+// 3. Biometric duplicate check: SearchFacesByImage in Rekognition collection.
+// 4. Store consent_records + encrypted verified_data per consented field.
+// 5. Store identity_hashes (doc_number HMAC + first_name_dob HMAC + face_id).
+// 6. IndexFaces to enroll biometric in collection.
+func StoreConsent(rekClient *rekognition.Client) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 		userID := r.Header.Get("X-User-ID")
 		if userID == "" {
@@ -58,7 +67,7 @@ func StoreConsent() httprouter.Handle {
 			return
 		}
 
-		// 2. Load the latest doc_scan biometric check for this session.
+		// 2. Load latest doc_scan result.
 		var docCheck models.BiometricCheck
 		if err := db.DB.Where("session_id = ? AND check_type = ?", internalSessionID, "doc_scan").
 			Order("attempt_number DESC").First(&docCheck).Error; err != nil {
@@ -71,7 +80,7 @@ func StoreConsent() httprouter.Handle {
 			return
 		}
 
-		// 3. Unmarshal extracted fields to build field → value map.
+		// 3. Reconstruct field→value map from extracted fields.
 		var extracted DocumentData
 		if len(docScan.ExtractedFields) > 0 {
 			_ = json.Unmarshal(docScan.ExtractedFields, &extracted)
@@ -87,12 +96,17 @@ func StoreConsent() httprouter.Handle {
 			"doc_number":      extracted.IDNumber,
 			"expiry_date":     extracted.Expiry,
 			"issuing_country": extracted.IssuingCountry,
+			"address":         extracted.Address,
 		}
 
-		// 4. Duplicate check via doc_number HMAC.
 		hmacSecret := os.Getenv("HMAC_SECRET")
 		encKey := os.Getenv("ENCRYPTION_KEY")
+		collectionID := os.Getenv("REKOGNITION_COLLECTION_ID")
+		if collectionID == "" {
+			collectionID = "identity-verification"
+		}
 
+		// 4. Document duplicate check via doc_number HMAC.
 		docNumber := extracted.IDNumber
 		if docNumber != "" {
 			docHash := computeHMAC(docNumber, hmacSecret)
@@ -100,7 +114,6 @@ func StoreConsent() httprouter.Handle {
 			err := db.DB.Where("field_name = ? AND hash_value = ?", "doc_number", docHash).
 				First(&existing).Error
 			if err == nil {
-				// Hash found — check ownership.
 				if existing.UserID != userID {
 					WriteJSON(w, http.StatusConflict, map[string]any{
 						"duplicate": true,
@@ -108,14 +121,61 @@ func StoreConsent() httprouter.Handle {
 					})
 					return
 				}
-				// Same user re-verifying — clean up old data for this user.
+				// Same user re-verifying — clean up old identity data.
 				db.DB.Where("user_id = ?", userID).Delete(&models.IdentityHash{})
 				db.DB.Where("user_id = ?", userID).Delete(&models.ConsentRecord{})
 				db.DB.Where("user_id = ?", userID).Delete(&models.VerifiedData{})
 			}
 		}
 
-		// 5. Store consent_records + verified_data for each consented field.
+		// 5. Load liveness reference image for biometric dedup.
+		var livenessCheck models.BiometricCheck
+		if err := db.DB.Where("session_id = ? AND check_type = ?", internalSessionID, "liveness").
+			First(&livenessCheck).Error; err != nil {
+			http.Error(w, "liveness check not found", http.StatusInternalServerError)
+			return
+		}
+		var livenessResult models.LivenessResult
+		if err := db.DB.Where("check_id = ?", livenessCheck.CheckID).First(&livenessResult).Error; err != nil {
+			http.Error(w, "liveness result not found", http.StatusInternalServerError)
+			return
+		}
+		refBytes, err := dataURLToBytes(livenessResult.ReferenceImage)
+		if err != nil {
+			http.Error(w, "decode reference image: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		// 6. Biometric duplicate check — SearchFacesByImage.
+		var existingFaceID string
+		searchOut, searchErr := rekClient.SearchFacesByImage(ctx, &rekognition.SearchFacesByImageInput{
+			CollectionId:       aws.String(collectionID),
+			Image:              &rektypes.Image{Bytes: refBytes},
+			FaceMatchThreshold: aws.Float32(95.0),
+			MaxFaces:           aws.Int32(1),
+		})
+		if searchErr == nil && len(searchOut.FaceMatches) > 0 {
+			match := searchOut.FaceMatches[0]
+			matchedUserID := aws.ToString(match.Face.ExternalImageId)
+			if matchedUserID != userID {
+				WriteJSON(w, http.StatusConflict, map[string]any{
+					"duplicate": true,
+					"message":   "This face has already been used to verify another account.",
+				})
+				return
+			}
+			// Same user re-verifying — delete old face from collection before re-enrolling.
+			existingFaceID = aws.ToString(match.Face.FaceId)
+			rekClient.DeleteFaces(ctx, &rekognition.DeleteFacesInput{ //nolint
+				CollectionId: aws.String(collectionID),
+				FaceIds:      []string{existingFaceID},
+			})
+		}
+
+		// 7. Store consent_records + encrypted verified_data.
 		for _, fieldName := range body.Fields {
 			value, ok := fieldValues[fieldName]
 			if !ok || value == "" {
@@ -153,7 +213,7 @@ func StoreConsent() httprouter.Handle {
 			}
 		}
 
-		// 6. Store identity hashes.
+		// 8. Store identity hashes.
 		if docNumber != "" {
 			docHash := computeHMAC(docNumber, hmacSecret)
 			db.DB.Create(&models.IdentityHash{
@@ -173,7 +233,25 @@ func StoreConsent() httprouter.Handle {
 			})
 		}
 
-		// 7. Audit log.
+		// 9. Enroll face in Rekognition collection — IndexFaces.
+		indexOut, indexErr := rekClient.IndexFaces(ctx, &rekognition.IndexFacesInput{
+			CollectionId:        aws.String(collectionID),
+			Image:               &rektypes.Image{Bytes: refBytes},
+			ExternalImageId:     aws.String(userID),
+			MaxFaces:            aws.Int32(1),
+			DetectionAttributes: []rektypes.Attribute{},
+		})
+		if indexErr == nil && len(indexOut.FaceRecords) > 0 {
+			faceID := aws.ToString(indexOut.FaceRecords[0].Face.FaceId)
+			db.DB.Create(&models.IdentityHash{
+				UserID:    userID,
+				FieldName: "face_id",
+				HashValue: faceID,
+				HashAlgo:  "rekognition_collection",
+			})
+		}
+
+		// 10. Audit log.
 		writeAudit(userID, "consent_stored", internalSessionID, map[string]any{
 			"fields": body.Fields,
 		})

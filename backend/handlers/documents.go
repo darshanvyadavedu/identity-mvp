@@ -9,9 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	rektypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
+	"github.com/aws/aws-sdk-go-v2/service/textract"
+	txttypes "github.com/aws/aws-sdk-go-v2/service/textract/types"
 	"github.com/julienschmidt/httprouter"
 )
 
@@ -31,10 +33,10 @@ const faceMatchThreshold = float32(80.0)
 // Form:     sessionId (string) + file (image/jpeg or image/png)
 //
 // 1. Verify the session is in liveness_passed state.
-// 2. OCR the document with Rekognition DetectText → document_scan_results.
+// 2. OCR the document with Textract AnalyzeID → document_scan_results.
 // 3. Compare liveness face vs document face → face_match_results.
 // 4. Update verification_sessions.decision_status.
-func UploadDocument(rekClient *rekognition.Client) httprouter.Handle {
+func UploadDocument(rekClient *rekognition.Client, txtClient *textract.Client) httprouter.Handle {
 	return func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		userID := r.Header.Get("X-User-ID")
 		if userID == "" {
@@ -105,7 +107,7 @@ func UploadDocument(rekClient *rekognition.Client) httprouter.Handle {
 
 		now := time.Now()
 
-		// 4. OCR — Rekognition DetectText.
+		// 4. OCR — Textract AnalyzeID.
 		var docAttempts int64
 		db.DB.Model(&models.BiometricCheck{}).
 			Where("session_id = ? AND check_type = ?", internalSessionID, "doc_scan").
@@ -120,16 +122,18 @@ func UploadDocument(rekClient *rekognition.Client) httprouter.Handle {
 		}
 		db.DB.Create(&docCheck)
 
-		docData, rawDocJSON, err := analyzeDocument(ctx, rekClient, docBytes)
+		docData, rawDocJSON, docExtractErr := analyzeDocumentTextract(ctx, txtClient, docBytes)
 		docStatus := "succeeded"
-		if err != nil {
+		if docExtractErr != nil {
 			docStatus = "failed"
+			log.Printf("[doc extract] error: %v", docExtractErr)
 		}
 		db.DB.Model(&docCheck).Update("status", docStatus)
 
 		extractedJSON, _ := json.Marshal(docData)
 		docScanResult := models.DocumentScanResult{
 			CheckID:         docCheck.CheckID,
+			DocumentType:    docData.DocumentType,
 			IssuingCountry:  docData.IssuingCountry,
 			IDNumberHMAC:    computeHMAC(docData.IDNumber, os.Getenv("HMAC_SECRET")),
 			ExtractedFields: extractedJSON,
@@ -160,8 +164,6 @@ func UploadDocument(rekClient *rekognition.Client) httprouter.Handle {
 		}
 		db.DB.Model(&fmCheck).Update("status", fmStatus)
 
-		rawFmJSON, _ := json.Marshal(map[string]any{"similarity": similarity, "passed": passed})
-		_ = rawFmJSON
 		faceMatchResult := models.FaceMatchResult{
 			CheckID:     fmCheck.CheckID,
 			Confidence:  similarity / 100.0,
@@ -199,12 +201,11 @@ func UploadDocument(rekClient *rekognition.Client) httprouter.Handle {
 				"passed":     passed,
 				"threshold":  faceMatchThreshold,
 			},
-			"issuingCountry": docData.IssuingCountry,
 		})
 	}
 }
 
-// ── AWS helpers ───────────────────────────────────────────────────────────────
+// ── Document data ─────────────────────────────────────────────────────────────
 
 type DocumentData struct {
 	FirstName      string `json:"firstName,omitempty"`
@@ -213,7 +214,77 @@ type DocumentData struct {
 	IDNumber       string `json:"idNumber,omitempty"`
 	Expiry         string `json:"expiry,omitempty"`
 	IssuingCountry string `json:"issuingCountry,omitempty"`
+	Address        string `json:"address,omitempty"`
+	DocumentType   string `json:"documentType,omitempty"`
 }
+
+// ── Textract AnalyzeID ────────────────────────────────────────────────────────
+
+// analyzeDocumentTextract uses Textract AnalyzeID to extract structured
+// identity fields. Only fields with confidence ≥ 60% are used.
+// Every field Textract returns is logged so unexpected keys are visible.
+func analyzeDocumentTextract(ctx context.Context, txtClient *textract.Client, imgBytes []byte) (*DocumentData, []byte, error) {
+	out, err := txtClient.AnalyzeID(ctx, &textract.AnalyzeIDInput{
+		DocumentPages: []txttypes.Document{
+			{Bytes: imgBytes},
+		},
+	})
+	if err != nil {
+		return &DocumentData{}, nil, err
+	}
+
+	raw, _ := json.Marshal(out)
+	doc := &DocumentData{}
+
+	if len(out.IdentityDocuments) == 0 {
+		log.Printf("[textract] 0 identity documents returned — document may not be supported")
+		return doc, raw, nil
+	}
+
+	fields := out.IdentityDocuments[0].IdentityDocumentFields
+	log.Printf("[textract] %d field(s) returned", len(fields))
+
+	const minConfidence = float64(60)
+	for _, field := range fields {
+		if field.Type == nil || field.ValueDetection == nil {
+			continue
+		}
+		key := aws.ToString(field.Type.Text)
+		val := strings.TrimSpace(aws.ToString(field.ValueDetection.Text))
+		conf := float64(aws.ToFloat32(field.ValueDetection.Confidence))
+
+		log.Printf("[textract]   %-25s = %-30q (%.1f%%)", key, val, conf)
+
+		if val == "" || conf < minConfidence {
+			continue
+		}
+		switch key {
+		case "FIRST_NAME":
+			doc.FirstName = val
+		case "LAST_NAME":
+			doc.LastName = val
+		case "DATE_OF_BIRTH":
+			doc.DOB = val
+		case "DOCUMENT_NUMBER":
+			doc.IDNumber = val
+		case "DATE_OF_EXPIRY", "EXPIRATION_DATE":
+			doc.Expiry = val
+		case "COUNTY", "COUNTRY", "PLACE_OF_BIRTH":
+			if doc.IssuingCountry == "" {
+				doc.IssuingCountry = val
+			}
+		case "ADDRESS":
+			doc.Address = val
+		case "ID_TYPE":
+			doc.DocumentType = val
+		}
+	}
+
+	log.Printf("[textract] extracted: %+v", doc)
+	return doc, raw, nil
+}
+
+// ── AWS helpers ───────────────────────────────────────────────────────────────
 
 // computeHMAC returns HMAC-SHA256 of value keyed by secret, hex-encoded.
 func computeHMAC(value, secret string) string {
@@ -223,95 +294,6 @@ func computeHMAC(value, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(value))
 	return hex.EncodeToString(mac.Sum(nil))
-}
-
-var (
-	reDate   = regexp.MustCompile(`\b(\d{1,2}[/.\-]\d{1,2}[/.\-]\d{2,4}|\d{4}[/.\-]\d{2}[/.\-]\d{2})\b`)
-	reDocNum = regexp.MustCompile(`\b([A-Z]{1,2}\d{6,9}|\d{9})\b`)
-	reMRZ    = regexp.MustCompile(`^[A-Z0-9<]{20,44}$`)
-)
-
-func analyzeDocument(ctx context.Context, client *rekognition.Client, imgBytes []byte) (*DocumentData, []byte, error) {
-	out, err := client.DetectText(ctx, &rekognition.DetectTextInput{
-		Image: &rektypes.Image{Bytes: imgBytes},
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	raw, _ := json.Marshal(out)
-
-	var lines []string
-	for _, d := range out.TextDetections {
-		if d.Type == rektypes.TextTypesLine {
-			lines = append(lines, aws.ToString(d.DetectedText))
-		}
-	}
-
-	return parseIDFields(lines), raw, nil
-}
-
-func parseIDFields(lines []string) *DocumentData {
-	doc := &DocumentData{}
-	var dates, mrzLines []string
-
-	for _, line := range lines {
-		upper := strings.ToUpper(strings.TrimSpace(line))
-		for _, m := range reDate.FindAllString(upper, -1) {
-			dates = append(dates, m)
-		}
-		if doc.IDNumber == "" {
-			if m := reDocNum.FindString(upper); m != "" {
-				doc.IDNumber = m
-			}
-		}
-		if reMRZ.MatchString(upper) {
-			mrzLines = append(mrzLines, upper)
-		}
-	}
-
-	if len(dates) > 0 {
-		doc.DOB = dates[0]
-	}
-	if len(dates) > 1 {
-		doc.Expiry = dates[len(dates)-1]
-	}
-	if len(mrzLines) >= 2 {
-		parseMRZ(mrzLines, doc)
-	}
-	return doc
-}
-
-func parseMRZ(lines []string, doc *DocumentData) {
-	if len(lines[0]) >= 5 {
-		raw := strings.TrimRight(lines[0][2:5], "<")
-		if raw != "" {
-			doc.IssuingCountry = raw
-		}
-	}
-	if len(lines[0]) >= 44 {
-		namePart := lines[0][5:44]
-		parts := strings.SplitN(namePart, "<<", 2)
-		if len(parts) == 2 {
-			doc.LastName = strings.TrimSpace(strings.ReplaceAll(parts[0], "<", " "))
-			doc.FirstName = strings.TrimSpace(strings.ReplaceAll(parts[1], "<", " "))
-		}
-	}
-	if len(lines) >= 2 && len(lines[1]) >= 27 {
-		l2 := lines[1]
-		if doc.IDNumber == "" {
-			doc.IDNumber = strings.TrimRight(l2[0:9], "<")
-		}
-		doc.DOB = formatMRZDate(l2[13:19])
-		doc.Expiry = formatMRZDate(l2[21:27])
-	}
-}
-
-func formatMRZDate(s string) string {
-	if len(s) != 6 {
-		return s
-	}
-	return s[4:6] + "/" + s[2:4] + "/" + s[0:2]
 }
 
 func compareFaces(ctx context.Context, client *rekognition.Client, srcBytes, tgtBytes []byte) (float64, []byte, error) {
