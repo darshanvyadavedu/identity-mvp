@@ -1,0 +1,27 @@
+# Environment variables — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Go
+backend/vendor/
+backend/*.exe
+backend/*.out
+
+# Node / frontend
+frontend/node_modules/
+frontend/.vite/
+frontend/dist/
+
+# Test artifacts
+textract-test/raw_response.json
+
+# IDE
+.vscode/
+.cursor/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
