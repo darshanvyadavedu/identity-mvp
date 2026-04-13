@@ -1,0 +1,23 @@
+{
+    "[go]": {
+      "editor.formatOnSave": true,
+      "editor.codeActionsOnSave": {
+        "source.organizeImports": "always"
+      }
+    },
+    "gopls": {
+      "formatting.gofumpt": true,  // optional: stricter formatting
+      "ui.completion.usePlaceholders": true,
+      "ui.diagnostic.analyses": {
+        "unusedparams": true,
+        "shadow": true
+      },
+      "experimentalPostfixCompletions": true
+    },
+    "go.toolsManagement.autoUpdate": true,
+    "go.useLanguageServer": true,
+    "go.testEnvFile": "${workspaceFolder}/development.env",
+    "markdown.styles": [
+      "https://socialsimulation.net/css/post.min.css"
+    ]
+  }

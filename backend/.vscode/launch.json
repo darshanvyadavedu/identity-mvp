@@ -1,0 +1,69 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Package",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${fileDirname}",
+      "env": {
+        "AFS_ORCHESTRATOR_HOST_URL": "https://publicalb1staging-1596437912.ap-south-1.elb.amazonaws.com",
+        "AFS_ORCHESTRATOR_SERVICE_ID": "approvals-api",
+        "AFS_ORCHESTRATOR_SERVICE_KEY": "589b05db-2fe6-407c-b1a4-25bee883dfc2",
+        "ALLOW_IP_MISMATCH": "true",
+        "API_SERVICE_ID": "c0d5424e-c9ee-4690-a59e-b6767b3a8e4c",
+        "API_SERVICE_KEY": "63a5a0fa9c1f26f076241106900d3d7f",
+        "API_URL": "https://api.stagingsimpl.com",
+        "APPROVALS_API_SERVICE_ID": "sika-backend-12cv",
+        "APPROVALS_API_SERVICE_KEY": "b69cb2e307dc1cbf47a52cea44a5ba2c",
+        "APPROVALS_API_URL": "https://approvals-api.stagingsimpl.com",
+        "ASYNQMON_PASSWORD": "12345678",
+        "ASYNQMON_USERNAME": "sika-backend",
+        "DATABASE_MAX_IDLE_CONNS": "10",
+        "DATABASE_MAX_OPEN_CONNS": "10",
+        "DATABASE_URL": "postgresql://localhost:5432/sika_backend_development?sslmode=disable",
+        "APPLICATION_NAME": "sika_backend",
+        "DUMP_SCHEMA_AFTER_MIGRATION": "true",
+        "ENV": "development",
+        "EVENT_PUBLISHER_URL": "http://events.stagingsimpl.com",
+        "MCL_MERCHANTS_IDS": "ec21ca61-4860-4bf1-a980-61a56d1e5ce4",
+        "PORT": "9000",
+        "REDIS_POOL_SIZE_API": "5",
+        "REDIS_POOL_SIZE_BACKGROUND_PROCESSOR": "10",
+        "REDIS_URL": "127.0.0.1:6379",
+        "RULE_ENGINE_API_SERVICE_ID": "sika-backend-12re",
+        "RULE_ENGINE_API_SERVICE_KEY": "5b5c6c3dd136ff1e67db413b125d81",
+        "RULE_ENGINE_API_URL": "https://rule-engine.stagingsimpl.com",
+        "SENTRY_DSN": "https://fad4bedcb88d8e8071e6237f38100a23@o4504671388565504.ingest.us.sentry.io/4507588677533696",
+        "SIKA_FRONTEND_URL": "https://sika.stagingsimpl.com",
+        "SIKA_WEBHOOK_URL": "https://sika.stagingsimpl.com/webhooks",
+        "SIMPL_WEB_GATEWAY_ID": "eb8b8933-7ac5-49e0-b705-01770a826568",
+        "SPLIT_PAY_API_SERVICE_ID": "sika-backend-12ba",
+        "SPLIT_PAY_API_SERVICE_KEY": "5ae33d7c73a6b4a0d35e0f96061aabd9",
+        "SPLIT_PAY_API_URL": "https://splitpay-api.stagingsimpl.com",
+        "SPLIT_PAY_ORCHESTRATOR_API_HOST_URL": "https://splitpay-orchestrator-api.stagingsimpl.com",
+        "SPLIT_PAY_ORCHESTRATOR_API_SERVICE_ID": "sika-backend-12ba",
+        "SPLIT_PAY_ORCHESTRATOR_SERVICE_KEY": "5ae33d7c73a6b4a0d35e0f96061aabd9",
+        "SPLIT_PAY_ORCHESTRATOR_ROLLOUT_PERCENTAGE": "100",
+        "SERVICE_AUTH_CONFIG": "sika-adapters-12cv:b69cb2e307dc1cbf47a52cea44a5ba2c|mdb-backend-12cv2:d49cb2e307dc1cbf47a52cea44a5ba2c",
+        "WHITELISTED_GATEWAY_FOR_STATIC_PAYMENT_PAGE": "03d6289d-2f49-4ac3-965c-1a41f9a94a6d",
+        "VERIFICATION_SERVICE_ID": "sika-backend-da27",
+        "VERIFICATION_SERVICE_KEY": "cef71dbda2741d2c49f5",
+        "VERIFICATION_SERVICE_URL": "https://verification-service.stagingsimpl.com",
+        "USER_SERVICE_API_URL": "https://users-service.stagingsimpl.com",
+        "USER_SERVICE_SERVICE_ID": "paas-59e7f6",
+        "USER_SERVICE_SERVICE_KEY": "82fd149df304ea7988de652d40fb760d",
+        "OTP_TYPE": "4_ALPHANUMERIC",
+        "WHITELISTED_MERCHANT_FOR_SPLIT_PAY_ORCHESTRATOR_FLOW": "ec21ca61-4860-4bf1-a980-61a56d1e5ce1:100",
+        "SIMPL_PAY_LATER_PRODUCT_ID": "655ddc72-7463-466d-8936-6daac280cb06",
+        "SIMPL_PI3_PRODUCT_ID": "a13ab28c-38b9-4bdc-a8b1-bec3c495b7b1",
+        "WHITELISTED_PHONE_NUMBER_FOR_SPLIT_PAY_ORCHESTRATOR_FLOW": "2996234209,2962342092"
+
+      }
+    }
+  ]
+}
