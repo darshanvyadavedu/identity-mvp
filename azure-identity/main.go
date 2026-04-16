@@ -11,20 +11,25 @@ import (
 	"azure-identity/handlers"
 	"azure-identity/store"
 
+	"github.com/joho/godotenv"
 	"github.com/julienschmidt/httprouter"
 )
 
 func main() {
-	faceEndpoint  := mustEnv("AZURE_FACE_ENDPOINT")
-	faceKey       := mustEnv("AZURE_FACE_KEY")
-	docEndpoint   := mustEnv("AZURE_DOCUMENT_ENDPOINT")
-	docKey        := mustEnv("AZURE_DOCUMENT_KEY")
-	faceListID    := getenv("AZURE_FACE_LIST_ID", "identity-verification")
-	port          := getenv("PORT", "8081")
+	// Load root .env first, then local .env (local overrides root).
+	_ = godotenv.Load("../.env")
+	_ = godotenv.Overload(".env")
 
-	face   := &azure.FaceClient{Endpoint: faceEndpoint, Key: faceKey}
+	faceEndpoint := mustEnv("AZURE_FACE_ENDPOINT")
+	faceKey := mustEnv("AZURE_FACE_KEY")
+	docEndpoint := mustEnv("AZURE_DOCUMENT_ENDPOINT")
+	docKey := mustEnv("AZURE_DOCUMENT_KEY")
+	faceListID := getenv("AZURE_FACE_LIST_ID", "identity-verification")
+	port := getenv("PORT", "8081")
+
+	face := &azure.FaceClient{Endpoint: faceEndpoint, Key: faceKey}
 	docInt := &azure.DocIntelClient{Endpoint: docEndpoint, Key: docKey}
-	st     := store.New()
+	st := store.New()
 
 	// Ensure Azure FaceList exists (idempotent).
 	if err := face.EnsureFaceList(context.Background(), faceListID); err != nil {
