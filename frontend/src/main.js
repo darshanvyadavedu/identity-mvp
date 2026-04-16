@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { LivenessCapture } from "./LivenessCapture.jsx";
+import { AzureLivenessCapture } from "./AzureLivenessCapture.jsx";
 
 // Hardcoded test user — set VITE_USER_ID in frontend/.env
 const USER_ID = import.meta.env.VITE_USER_ID || "";
@@ -13,16 +14,18 @@ const authHeaders = () => ({ "X-User-ID": USER_ID });
 // ── State ──────────────────────────────────────────────────────────────────
 // idle | creating | capturing | polling | liveness_done |
 // uploading | processing_doc | consenting | storing_consent | verified | duplicate | error
-let appState        = "idle";
-let appError        = null;
-let sessionId       = null;   // our internal UUID
-let providerSessionId = null; // AWS session ID — passed to the Amplify SDK
-let livenessResult  = null;   // { livenessStatus, livenessConfidence, referenceImage }
-let verifiedResult  = null;   // { decisionStatus, document, faceMatch }
-let selectedFile    = null;
-let previewURL      = null;
-let reactRoot       = null;
-let consentStored   = false;
+let appState          = "idle";
+let appError          = null;
+let sessionId         = null;   // our internal UUID
+let providerSessionId = null;   // AWS/Azure session ID — passed to the liveness SDK
+let provider          = null;   // "aws" | "azure" — determines which SDK to render
+let authToken         = null;   // Azure only — passed to AzureLivenessCapture
+let livenessResult    = null;   // { livenessStatus, livenessConfidence, referenceImage }
+let verifiedResult    = null;   // { decisionStatus, document, faceMatch }
+let selectedFile      = null;
+let previewURL        = null;
+let reactRoot         = null;
+let consentStored     = false;
 
 // ── DOM ────────────────────────────────────────────────────────────────────
 document.getElementById("app").innerHTML = `
@@ -405,31 +408,42 @@ async function start() {
     const session     = await apiCreateSession();
     sessionId         = session.sessionId;
     providerSessionId = session.providerSessionId;
+    provider          = session.provider;   // "aws" | "azure"
+    authToken         = session.authToken;  // Azure only
   } catch (e) {
     appError = e.message; appState = "error"; render(); return;
   }
 
   appState = "capturing"; render();
   reactRoot = createRoot(sdkContainer);
-  reactRoot.render(React.createElement(LivenessCapture, {
-    providerSessionId,
-    onComplete: async () => {
-      reactRoot.unmount(); reactRoot = null;
-      appState = "polling"; render();
-      try {
-        livenessResult = await apiGetLivenessResult(sessionId);
-        appState = "liveness_done"; render();
-      } catch (e) {
-        appError = e.message; appState = "error"; render();
-      }
-    },
-    onCancel: () => { reactRoot.unmount(); reactRoot = null; appState = "idle"; render(); },
-    onError:  (e) => {
-      reactRoot.unmount(); reactRoot = null;
-      appError = e?.message ?? JSON.stringify(e, null, 2);
-      appState = "error"; render();
-    },
-  }));
+
+  const onComplete = async () => {
+    reactRoot.unmount(); reactRoot = null;
+    appState = "polling"; render();
+    try {
+      livenessResult = await apiGetLivenessResult(sessionId);
+      appState = "liveness_done"; render();
+    } catch (e) {
+      appError = e.message; appState = "error"; render();
+    }
+  };
+  const onCancel = () => { reactRoot.unmount(); reactRoot = null; appState = "idle"; render(); };
+  const onError  = (e) => {
+    reactRoot.unmount(); reactRoot = null;
+    appError = e?.message ?? JSON.stringify(e, null, 2);
+    appState = "error"; render();
+  };
+
+  // Load the appropriate liveness SDK based on provider returned by backend.
+  if (provider === "azure") {
+    reactRoot.render(React.createElement(AzureLivenessCapture, {
+      authToken, onComplete, onCancel, onError,
+    }));
+  } else {
+    reactRoot.render(React.createElement(LivenessCapture, {
+      providerSessionId, onComplete, onCancel, onError,
+    }));
+  }
 }
 
 async function submitDoc() {
@@ -464,6 +478,7 @@ async function submitConsent() {
 
 function reset() {
   sessionId = null; providerSessionId = null;
+  provider = null; authToken = null;
   livenessResult = null; verifiedResult = null;
   selectedFile = null; consentStored = false;
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }

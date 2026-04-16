@@ -75,6 +75,7 @@ func CreateSession(rekClient *rekognition.Client) httprouter.Handle {
 		WriteJSON(w, http.StatusCreated, map[string]string{
 			"sessionId":         session.SessionID,
 			"providerSessionId": awsSessionID,
+			"provider":          "aws",
 			"userId":            userID,
 		})
 	}
