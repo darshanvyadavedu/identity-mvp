@@ -66,6 +66,8 @@ type LivenessSessionResult struct {
 			Result        *struct {
 				LivenessDecision string `json:"livenessDecision"` // "realface" | "spoofface" | "uncertain"
 				Digest           string `json:"digest"`
+				SessionImageID   string `json:"sessionImageId"`
+				VerifyImageHash  string `json:"verifyImageHash"`
 				Targets          *struct {
 					Color *struct {
 						FaceRectangle struct {
@@ -96,6 +98,12 @@ func (c *FaceClient) GetLivenessSessionResult(ctx context.Context, sessionID str
 	fmt.Printf("[Azure liveness raw] %s\n", string(resp))
 	var out LivenessSessionResult
 	return &out, json.Unmarshal(resp, &out)
+}
+
+// GetSessionImage downloads the captured face image using its sessionImageId.
+// Endpoint: GET /face/v1.2/sessionImages/{sessionImageId}
+func (c *FaceClient) GetSessionImage(ctx context.Context, sessionImageID string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/face/"+apiVersion+"/sessionImages/"+sessionImageID, "", nil)
 }
 
 // DeleteLivenessSession deletes a session after it's no longer needed.

@@ -17,10 +17,10 @@ type Session struct {
 }
 
 type LivenessResult struct {
-	SessionID      string
-	Verdict        string  // live | failed
-	Confidence     float64 // 0-100
-	ReferenceImage string  // data URL
+	SessionID         string
+	Verdict           string // succeeded | failed
+	SessionImageID    string // Azure sessionImageId — used to download the face capture
+	SessionImageBytes []byte // downloaded face capture — used for face comparison against doc
 }
 
 type DocScanResult struct {

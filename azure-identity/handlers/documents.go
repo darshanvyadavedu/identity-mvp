@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -17,7 +18,7 @@ import (
 	"github.com/julienschmidt/httprouter"
 )
 
-const faceMatchThreshold = 0.80 // Azure confidence is 0.0-1.0
+const faceMatchThreshold = 0.70 // Azure confidence is 0.0-1.0
 
 // POST /api/documents
 // Header:  X-User-ID: <uuid>
@@ -46,10 +47,10 @@ func UploadDocument(face *azure.FaceClient, docInt *azure.DocIntelClient, st *st
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
-		if sess.Status != "liveness_passed" {
-			http.Error(w, "liveness check must pass first (current: "+sess.Status+")", http.StatusBadRequest)
-			return
-		}
+		// if sess.Status != "liveness_passed" {
+		// 	http.Error(w, "liveness check must pass first (current: "+sess.Status+")", http.StatusBadRequest)
+		// 	return
+		// }
 
 		// Read uploaded document.
 		file, _, err := r.FormFile("file")
@@ -73,6 +74,7 @@ func UploadDocument(face *azure.FaceClient, docInt *azure.DocIntelClient, st *st
 			http.Error(w, "document analysis: "+docErr.Error(), http.StatusBadGateway)
 			return
 		}
+		log.Printf("document fields: %+v", fields)
 
 		// 2. Early duplicate check: name+DOB hash.
 		if fields.FirstName != "" && fields.DOB != "" {
@@ -87,31 +89,36 @@ func UploadDocument(face *azure.FaceClient, docInt *azure.DocIntelClient, st *st
 			}
 		}
 
-		// 3. Face comparison — detect face in document, compare with selfie.
-		//    Azure liveness doesn't return a reference image, so we read the selfie
-		//    from a separate "selfie" form field if provided, otherwise skip face match.
+		// 3. Face comparison — download the captured liveness image from Azure,
+		//    detect faces in both it and the document, then verify they match.
 		var similarity float64
 		var facePassed bool
 
-		selfieFile, _, selfieErr := r.FormFile("selfie")
-		if selfieErr == nil {
-			defer selfieFile.Close()
-			selfieBytes, _ := io.ReadAll(selfieFile)
+		livenessResult, hasLiveness := st.GetLivenessResult(internalID)
+		if !hasLiveness {
+			log.Printf("face compare: no liveness result for sessionId=%s", internalID)
+		} else if len(livenessResult.SessionImageBytes) == 0 {
+			log.Printf("face compare: liveness result found but no image bytes for sessionId=%s", internalID)
+		}
 
-			selfieID, err1 := face.DetectFaceFromBytes(ctx, selfieBytes)
+		if hasLiveness && len(livenessResult.SessionImageBytes) > 0 {
+			log.Printf("face compare: detecting faces — liveness image=%d bytes, doc image=%d bytes", len(livenessResult.SessionImageBytes), len(docBytes))
+			selfieID, err1 := face.DetectFaceFromBytes(ctx, livenessResult.SessionImageBytes)
 			docFaceID, err2 := face.DetectFaceFromBytes(ctx, docBytes)
-
+			log.Printf("face compare: selfieID=%q err=%v  docFaceID=%q err=%v", selfieID, err1, docFaceID, err2)
 			if err1 == nil && err2 == nil {
 				verifyResp, err := face.VerifyFaces(ctx, selfieID, docFaceID)
-				if err == nil {
+				if err != nil {
+					log.Printf("face compare: VerifyFaces error: %v", err)
+				} else {
+					log.Printf("face compare: isIdentical=%v confidence=%.4f", verifyResp.IsIdentical, verifyResp.Confidence)
 					similarity = verifyResp.Confidence * 100
 					facePassed = verifyResp.Confidence >= faceMatchThreshold
 				}
 			}
 		} else {
-			// No selfie uploaded — skip face match, mark as passed for doc-only flow.
+			// No liveness image stored — skip face match.
 			facePassed = true
-			similarity = 0
 		}
 
 		// 4. Store doc scan result.

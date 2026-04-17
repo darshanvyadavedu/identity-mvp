@@ -52,6 +52,7 @@ func main() {
 
 	router.POST("/api/sessions", handlers.CreateSession(face, st))
 	router.GET("/api/sessions/:sessionId/result", handlers.GetLivenessResult(face, st))
+	router.GET("/api/sessions/:sessionId/liveness-image", handlers.GetLivenessImage(st))
 	router.POST("/api/documents", handlers.UploadDocument(face, docInt, st))
 	router.POST("/api/sessions/:sessionId/consent", handlers.StoreConsent(face, faceListID, st))
 

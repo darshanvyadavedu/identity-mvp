@@ -20,7 +20,8 @@ let sessionId         = null;   // our internal UUID
 let providerSessionId = null;   // AWS/Azure session ID — passed to the liveness SDK
 let provider          = null;   // "aws" | "azure" — determines which SDK to render
 let authToken         = null;   // Azure only — passed to AzureLivenessCapture
-let livenessResult    = null;   // { livenessStatus, livenessConfidence, referenceImage }
+let livenessResult    = null;   // { livenessStatus, livenessImage }
+let livenessImageURL  = null;   // data URL of captured liveness face
 let verifiedResult    = null;   // { decisionStatus, document, faceMatch }
 let selectedFile      = null;
 let previewURL        = null;
@@ -115,17 +116,13 @@ function render() {
       break;
 
     // ── Liveness done ───────────────────────────────────────────────────────
-    case "liveness_done": {
-      const { livenessConfidence, referenceImage } = livenessResult;
+    case "liveness_done":
       cardContent.innerHTML = `
-        ${referenceImage ? `<img src="${referenceImage}" style="
+        ${livenessImageURL ? `<img src="${livenessImageURL}" style="
           width:120px;height:120px;object-fit:cover;border-radius:50%;
-          border:3px solid #16a34a;margin-bottom:16px;display:block;margin:0 auto 16px;
+          border:3px solid #2563eb;display:block;margin:0 auto 16px;
         " />` : ""}
         <p style="color:#16a34a;font-weight:600;font-size:1rem;margin:0 0 4px;">✅ Liveness Verified</p>
-        <p style="color:#6b7280;font-size:.9rem;margin:0 0 24px;">
-          Confidence: <strong>${livenessConfidence?.toFixed(1)}%</strong>
-        </p>
         <p style="color:#374151;font-size:.95rem;margin:0 0 20px;">
           Now upload a photo of your ID document.
         </p>
@@ -134,7 +131,6 @@ function render() {
         </button>
       `;
       break;
-    }
 
     case "polling":
       cardContent.innerHTML = spinner("Fetching liveness result…");
@@ -193,6 +189,17 @@ function render() {
       ].filter(f => f.value);
 
       cardContent.innerHTML = `
+        ${(livenessImageURL || previewURL) ? `
+        <div style="display:flex;gap:12px;justify-content:center;margin-bottom:16px;">
+          ${livenessImageURL ? `<div style="text-align:center;">
+            <img src="${livenessImageURL}" style="width:90px;height:90px;object-fit:cover;border-radius:50%;border:3px solid #2563eb;" />
+            <p style="font-size:.72rem;color:#6b7280;margin:4px 0 0;">Liveness capture</p>
+          </div>` : ""}
+          ${previewURL ? `<div style="text-align:center;">
+            <img src="${previewURL}" style="width:90px;height:90px;object-fit:cover;border-radius:50%;border:3px solid #16a34a;" />
+            <p style="font-size:.72rem;color:#6b7280;margin:4px 0 0;">ID document</p>
+          </div>` : ""}
+        </div>` : ""}
         <div style="font-size:2rem;margin-bottom:8px;">🔒</div>
         <h2 style="margin:0 0 4px;font-size:1.1rem;color:#111;">Consent to store your data</h2>
         <p style="color:#6b7280;font-size:.85rem;margin:0 0 20px;">
@@ -239,6 +246,17 @@ function render() {
       const { decisionStatus, document: doc, faceMatch } = verifiedResult;
       const passed = decisionStatus === "verified";
       cardContent.innerHTML = `
+        ${(livenessImageURL || previewURL) ? `
+        <div style="display:flex;gap:12px;justify-content:center;margin-bottom:16px;">
+          ${livenessImageURL ? `<div style="text-align:center;">
+            <img src="${livenessImageURL}" style="width:90px;height:90px;object-fit:cover;border-radius:50%;border:3px solid #2563eb;" />
+            <p style="font-size:.72rem;color:#6b7280;margin:4px 0 0;">Liveness capture</p>
+          </div>` : ""}
+          ${previewURL ? `<div style="text-align:center;">
+            <img src="${previewURL}" style="width:90px;height:90px;object-fit:cover;border-radius:50%;border:3px solid #16a34a;" />
+            <p style="font-size:.72rem;color:#6b7280;margin:4px 0 0;">ID document</p>
+          </div>` : ""}
+        </div>` : ""}
         <div style="font-size:3rem;margin-bottom:12px;">${passed ? "🎉" : "❌"}</div>
         <h2 style="margin:0 0 8px;font-size:1.2rem;color:${passed ? "#16a34a" : "#dc2626"};">
           ${passed ? "Identity Verified" : "Verification Failed"}
@@ -422,6 +440,7 @@ async function start() {
     appState = "polling"; render();
     try {
       livenessResult = await apiGetLivenessResult(sessionId);
+      if (livenessResult.livenessImage) livenessImageURL = livenessResult.livenessImage;
       appState = "liveness_done"; render();
     } catch (e) {
       appError = e.message; appState = "error"; render();
@@ -479,7 +498,7 @@ async function submitConsent() {
 function reset() {
   sessionId = null; providerSessionId = null;
   provider = null; authToken = null;
-  livenessResult = null; verifiedResult = null;
+  livenessResult = null; livenessImageURL = null; verifiedResult = null;
   selectedFile = null; consentStored = false;
   if (previewURL) { URL.revokeObjectURL(previewURL); previewURL = null; }
   appError = null; appState = "idle"; render();

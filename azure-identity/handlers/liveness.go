@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -40,7 +42,7 @@ func GetLivenessResult(face *azure.FaceClient, st *store.Store) httprouter.Handl
 		}
 		fmt.Println(result)
 
-		if result.Status != "ResultAvailable" {
+		if result.Status != "Succeeded" && result.Status != "ResultAvailable" {
 			WriteJSON(w, http.StatusOK, map[string]any{
 				"sessionId":      internalID,
 				"livenessStatus": result.Status,
@@ -50,17 +52,16 @@ func GetLivenessResult(face *azure.FaceClient, st *store.Store) httprouter.Handl
 
 		// 2. Parse verdict from latest attempt.
 		var verdict string
-		var confidence float64
+		var sessionImageID string
 		attempts := result.Results.Attempts
 		if len(attempts) > 0 {
 			latest := attempts[len(attempts)-1]
 			if latest.Result != nil {
+				sessionImageID = latest.Result.SessionImageID
 				if latest.Result.LivenessDecision == "realface" {
 					verdict = "succeeded"
-					confidence = 95.0 // Azure doesn't return a confidence score directly
 				} else {
 					verdict = "failed"
-					confidence = 0
 				}
 			}
 			if latest.Error != nil {
@@ -77,17 +78,54 @@ func GetLivenessResult(face *azure.FaceClient, st *store.Store) httprouter.Handl
 		}
 		st.UpdateSession(internalID, sessionStatus, decisionStatus)
 
-		// 4. Store liveness result (no reference image from Azure liveness — will use uploaded doc photo for face compare).
+		// 4. Save liveness verdict immediately so documents.go can find it.
 		st.SaveLivenessResult(&store.LivenessResult{
-			SessionID:  internalID,
-			Verdict:    verdict,
-			Confidence: confidence,
+			SessionID:      internalID,
+			Verdict:        verdict,
+			SessionImageID: sessionImageID,
 		})
 
+		// 5. Download the captured face image (only when liveness passed).
+		//    Endpoint: GET /face/v1.2/sessionImages/{sessionImageId}
+		if verdict == "succeeded" && sessionImageID != "" {
+			log.Printf("downloading session image: imageID=%s", sessionImageID)
+			imgBytes, imgErr := face.GetSessionImage(ctx, sessionImageID)
+			if imgErr != nil {
+				log.Printf("warn: could not download session image: %v", imgErr)
+			} else {
+				log.Printf("session image downloaded: %d bytes", len(imgBytes))
+				lr, ok := st.GetLivenessResult(internalID)
+				if ok {
+					lr.SessionImageBytes = imgBytes
+				}
+			}
+		}
+
+		// Include liveness image as base64 if available.
+		var livenessImageB64 string
+		if lr, ok := st.GetLivenessResult(internalID); ok && len(lr.SessionImageBytes) > 0 {
+			livenessImageB64 = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(lr.SessionImageBytes)
+		}
+
 		WriteJSON(w, http.StatusOK, map[string]any{
-			"sessionId":          internalID,
-			"livenessStatus":     verdict,
-			"livenessConfidence": confidence,
+			"sessionId":      internalID,
+			"livenessStatus": verdict,
+			"livenessImage":  livenessImageB64,
 		})
+	}
+}
+
+// GET /api/sessions/:sessionId/liveness-image
+// Returns the captured liveness face image as JPEG for inspection.
+func GetLivenessImage(st *store.Store) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		internalID := ps.ByName("sessionId")
+		lr, ok := st.GetLivenessResult(internalID)
+		if !ok || len(lr.SessionImageBytes) == 0 {
+			http.Error(w, "liveness image not available", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(lr.SessionImageBytes)
 	}
 }
