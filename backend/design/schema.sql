@@ -20,8 +20,6 @@ CREATE TABLE public.users (
     password_hash    character varying(255)         NOT NULL,
     email            character varying(255)         NOT NULL,
     id_verified      boolean                        DEFAULT false,
-    retry_count      integer                        DEFAULT 0,
-    locked_until     timestamp with time zone,
     created_at       timestamp with time zone       DEFAULT now(),
     updated_at       timestamp with time zone       DEFAULT now()
 );
