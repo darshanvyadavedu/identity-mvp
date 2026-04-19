@@ -68,8 +68,6 @@ func toDBSession(m *models.VerificationSession) *dbmodels.VerificationSession {
 		DecisionStatus:    string(m.DecisionStatus),
 		Provider:          m.Provider,
 		ProviderSessionID: m.ProviderSessionID,
-		RetryCount:        m.RetryCount,
-		ExpiresAt:         m.ExpiresAt,
 	}
 }
 
@@ -82,8 +80,6 @@ func fromDBSession(row *dbmodels.VerificationSession) *models.VerificationSessio
 		DecisionStatus:    models.DecisionStatus(row.DecisionStatus),
 		Provider:          row.Provider,
 		ProviderSessionID: row.ProviderSessionID,
-		RetryCount:        row.RetryCount,
-		ExpiresAt:         row.ExpiresAt,
 		CreatedAt:         row.CreatedAt,
 		UpdatedAt:         row.UpdatedAt,
 	}

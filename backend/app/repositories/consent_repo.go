@@ -31,6 +31,7 @@ func (r *consentRepo) CreateConsent(db *gorm.DB, consent *models.ConsentRecord) 
 		SessionID: consent.SessionID,
 		FieldName: consent.FieldName,
 		Consented: consent.Consented,
+		HashValue: consent.HashValue,
 	}
 	if err := db.Create(row).Error; err != nil {
 		return nil, fmt.Errorf("create consent record: %w", err)

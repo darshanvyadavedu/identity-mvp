@@ -34,8 +34,6 @@ CREATE TABLE public.verification_sessions (
     decision_status      character varying(50)          DEFAULT 'pending',
     provider             character varying(50),
     provider_session_id  character varying(255),
-    retry_count          integer                        DEFAULT 0,
-    expires_at           timestamp with time zone,
     created_at           timestamp with time zone       DEFAULT now(),
     updated_at           timestamp with time zone       DEFAULT now()
 );
@@ -46,7 +44,6 @@ CREATE TABLE public.biometric_checks (
     user_id         uuid                           NOT NULL,
     entity_type     character varying(50)          NOT NULL,
     status          character varying(50)          DEFAULT 'pending',
-    attempted_at    timestamp with time zone,
     attempt_number  integer                        DEFAULT 1,
     entity_value    jsonb,
     reference_image text,
@@ -56,23 +53,25 @@ CREATE TABLE public.biometric_checks (
 );
 
 CREATE TABLE public.identity_hashes (
-    hash_id    uuid DEFAULT gen_random_uuid() NOT NULL,
-    user_id    uuid                           NOT NULL,
-    field_name character varying(50)          NOT NULL,
-    hash_value character varying(255)         NOT NULL,
-    hash_algo  character varying(50)          NOT NULL,
-    created_at timestamp with time zone       DEFAULT now(),
-    updated_at timestamp with time zone       DEFAULT now()
+    hash_id     uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id     uuid                           NOT NULL,
+    field_name  character varying(50)          NOT NULL,
+    hash_value  character varying(255)         NOT NULL,  -- HMAC(value, userID+":"+secret), user-specific
+    blind_index character varying(255),                   -- HMAC(value, secret), global dedup only
+    hash_algo   character varying(50)          NOT NULL,
+    created_at  timestamp with time zone       DEFAULT now(),
+    updated_at  timestamp with time zone       DEFAULT now()
 );
 
 CREATE TABLE public.consent_records (
     consent_id uuid DEFAULT gen_random_uuid() NOT NULL,
     user_id    uuid,
     session_id uuid,
-    field_name character varying(100),
-    consented  boolean,
-    created_at timestamp with time zone       DEFAULT now(),
-    updated_at timestamp with time zone       DEFAULT now()
+    field_name  character varying(100),
+    consented   boolean,
+    hash_value  text,
+    created_at  timestamp with time zone       DEFAULT now(),
+    updated_at  timestamp with time zone       DEFAULT now()
 );
 
 CREATE TABLE public.verified_data (
@@ -116,7 +115,7 @@ ALTER TABLE ONLY public.biometric_checks
 ALTER TABLE ONLY public.identity_hashes
     ADD CONSTRAINT identity_hashes_pkey PRIMARY KEY (hash_id);
 ALTER TABLE ONLY public.identity_hashes
-    ADD CONSTRAINT identity_hashes_user_id_field_name_hash_value_key UNIQUE (user_id, field_name, hash_value);
+    ADD CONSTRAINT identity_hashes_field_name_hash_value_key UNIQUE (field_name, hash_value);
 
 ALTER TABLE ONLY public.consent_records
     ADD CONSTRAINT consent_records_pkey PRIMARY KEY (consent_id);
@@ -136,6 +135,7 @@ CREATE INDEX idx_sessions_user_id  ON public.verification_sessions USING btree (
 CREATE INDEX idx_sessions_status   ON public.verification_sessions USING btree (status);
 CREATE INDEX idx_checks_user_id    ON public.biometric_checks      USING btree (user_id);
 CREATE INDEX idx_ihashes_lookup    ON public.identity_hashes        USING btree (field_name, hash_value);
+CREATE INDEX idx_ihashes_blind     ON public.identity_hashes        USING btree (field_name, blind_index);
 
 
 -- =============================================================================

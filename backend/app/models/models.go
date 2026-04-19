@@ -29,8 +29,6 @@ type VerificationSession struct {
 	DecisionStatus    DecisionStatus
 	Provider          string
 	ProviderSessionID string
-	RetryCount        int
-	ExpiresAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -60,10 +58,9 @@ type BiometricCheck struct {
 	EntityType     EntityType
 	Status         CheckStatus
 	AttemptNumber  int
-	AttemptedAt    *time.Time
-	EntityValue    []byte  // unmarshal into typed payload struct based on EntityType
-	ReferenceImage string  // liveness image data URL
-	RawResponse    []byte  // full provider response — audit only
+	EntityValue    []byte // unmarshal into typed payload struct based on EntityType
+	ReferenceImage string // liveness image data URL
+	RawResponse    []byte // full provider response — audit only
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -85,13 +82,14 @@ type FaceMatchEntityValue struct {
 // ── IdentityHash ──────────────────────────────────────────────────────────────
 
 type IdentityHash struct {
-	HashID    string
-	UserID    string
-	FieldName string
-	HashValue string
-	HashAlgo  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	HashID     string
+	UserID     string
+	FieldName  string
+	HashValue  string // HMAC(value, userID+":"+secret) — user-specific, private
+	BlindIndex string // HMAC(value, secret) — global, used only for cross-user dedup
+	HashAlgo   string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 // ── ConsentRecord ─────────────────────────────────────────────────────────────
@@ -102,6 +100,7 @@ type ConsentRecord struct {
 	SessionID string
 	FieldName string
 	Consented bool
+	HashValue string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

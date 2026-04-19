@@ -12,7 +12,9 @@ import (
 // IdentityHashRepoInterface defines data access for identity hashes.
 type IdentityHashRepoInterface interface {
 	Create(db *gorm.DB, hash *models.IdentityHash) error
-	FindByFieldAndHash(db *gorm.DB, fieldName, hashValue string) (*models.IdentityHash, error)
+	// FindByFieldAndBlindIndex looks up a row by the globally-consistent blind index
+	// (used for cross-user duplicate detection without exposing the private hash).
+	FindByFieldAndBlindIndex(db *gorm.DB, fieldName, blindIndex string) (*models.IdentityHash, error)
 	DeleteByUser(db *gorm.DB, userID string) error
 	DeleteByUserAndField(db *gorm.DB, userID, fieldName string) error
 }
@@ -32,9 +34,9 @@ func (r *identityHashRepo) Create(db *gorm.DB, hash *models.IdentityHash) error 
 	return nil
 }
 
-func (r *identityHashRepo) FindByFieldAndHash(db *gorm.DB, fieldName, hashValue string) (*models.IdentityHash, error) {
+func (r *identityHashRepo) FindByFieldAndBlindIndex(db *gorm.DB, fieldName, blindIndex string) (*models.IdentityHash, error) {
 	var row dbmodels.IdentityHash
-	err := db.Where("field_name = ? AND hash_value = ?", fieldName, hashValue).First(&row).Error
+	err := db.Where("field_name = ? AND blind_index = ?", fieldName, blindIndex).First(&row).Error
 	if err != nil {
 		return nil, err
 	}
@@ -53,22 +55,24 @@ func (r *identityHashRepo) DeleteByUserAndField(db *gorm.DB, userID, fieldName s
 
 func toDBIdentityHash(m *models.IdentityHash) *dbmodels.IdentityHash {
 	return &dbmodels.IdentityHash{
-		HashID:    m.HashID,
-		UserID:    m.UserID,
-		FieldName: m.FieldName,
-		HashValue: m.HashValue,
-		HashAlgo:  m.HashAlgo,
+		HashID:     m.HashID,
+		UserID:     m.UserID,
+		FieldName:  m.FieldName,
+		HashValue:  m.HashValue,
+		BlindIndex: m.BlindIndex,
+		HashAlgo:   m.HashAlgo,
 	}
 }
 
 func fromDBIdentityHash(row *dbmodels.IdentityHash) *models.IdentityHash {
 	return &models.IdentityHash{
-		HashID:    row.HashID,
-		UserID:    row.UserID,
-		FieldName: row.FieldName,
-		HashValue: row.HashValue,
-		HashAlgo:  row.HashAlgo,
-		CreatedAt: row.CreatedAt,
-		UpdatedAt: row.UpdatedAt,
+		HashID:     row.HashID,
+		UserID:     row.UserID,
+		FieldName:  row.FieldName,
+		HashValue:  row.HashValue,
+		BlindIndex: row.BlindIndex,
+		HashAlgo:   row.HashAlgo,
+		CreatedAt:  row.CreatedAt,
+		UpdatedAt:  row.UpdatedAt,
 	}
 }

@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"user-authentication/app/models"
 	"user-authentication/app/repositories"
@@ -78,28 +77,24 @@ func (svc *sessionService) CreateSession(ctx context.Context, db *gorm.DB, param
 	}
 
 	// 2. Persist verification session.
-	expires := time.Now().Add(10 * time.Minute)
 	session, err := svc.sessionRepo.Create(db, &models.VerificationSession{
 		UserID:            params.UserID,
 		Provider:          provider,
 		ProviderSessionID: providerSession.ProviderSessionID,
 		Status:            models.SessionStatusPending,
 		DecisionStatus:    models.DecisionStatusPending,
-		ExpiresAt:         &expires,
 	})
 	if err != nil {
 		return nil, ErrInternalServer("save session: " + err.Error())
 	}
 
 	// 3. Create the liveness biometric check record.
-	now := time.Now()
 	_, err = svc.checkRepo.Create(db, &models.BiometricCheck{
 		SessionID:     session.SessionID,
 		UserID:        params.UserID,
 		EntityType:    models.EntityTypeLiveness,
 		Status:        models.CheckStatusPending,
 		AttemptNumber: 1,
-		AttemptedAt:   &now,
 	})
 	if err != nil {
 		return nil, ErrInternalServer("save biometric check: " + err.Error())

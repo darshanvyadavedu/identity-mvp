@@ -131,11 +131,11 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 	entityJSON, _ := json.Marshal(docData)
 	_ = svc.checkRepo.UpdateEntityValue(db, docCheck.CheckID, entityJSON, rawDocJSON, nil)
 
-	// 5. Early duplicate check: name+DOB HMAC.
+	// 5. Early duplicate check: name+DOB blind index.
 	if docData.FirstName != "" && docData.DOB != "" {
 		combo := docData.FirstName + "|" + docData.DOB
-		nameDOBHash := computeHMAC(combo, cfg.HMACSecret)
-		existing, findErr := svc.hashRepo.FindByFieldAndHash(db, "first_name_dob", nameDOBHash)
+		nameDOBBlind := computeHMAC(combo, cfg.HMACSecret)
+		existing, findErr := svc.hashRepo.FindByFieldAndBlindIndex(db, "first_name_dob", nameDOBBlind)
 		if findErr == nil && existing != nil && existing.UserID != params.UserID {
 			return nil, ErrConflict("Identity already exists: this document's name and date of birth are linked to another account.")
 		}

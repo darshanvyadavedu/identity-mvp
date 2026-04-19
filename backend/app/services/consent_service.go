@@ -111,14 +111,15 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		"address":         extracted.Address,
 	}
 
-	// 3. Document duplicate check via doc_number HMAC.
-	docNumber := extracted.IDNumber
-	if docNumber != "" {
-		docHash := computeHMAC(docNumber, cfg.HMACSecret)
-		existing, findErr := svc.hashRepo.FindByFieldAndHash(db, "doc_number", docHash)
+	// 3. Identity duplicate check via first_name+DOB blind index.
+	// Relies on the person, not the document — prevents the same person verifying with different documents.
+	if extracted.FirstName != "" && extracted.DOB != "" {
+		combo := extracted.FirstName + "|" + extracted.DOB
+		blindIdx := computeHMAC(combo, cfg.HMACSecret)
+		existing, findErr := svc.hashRepo.FindByFieldAndBlindIndex(db, "first_name_dob", blindIdx)
 		if findErr == nil && existing != nil {
 			if existing.UserID != params.UserID {
-				return nil, ErrConflict("This document has already been used to verify another account.")
+				return nil, ErrConflict("An account is already verified with this identity.")
 			}
 			// Same user re-verifying — clean up old identity data.
 			_ = svc.hashRepo.DeleteByUser(db, params.UserID)
@@ -182,42 +183,23 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		}
 	}
 
-	// 7. Store identity hashes.
-	if docNumber != "" {
-		docHash := computeHMAC(docNumber, cfg.HMACSecret)
-		_ = svc.hashRepo.Create(db, &models.IdentityHash{
-			UserID:    params.UserID,
-			FieldName: "doc_number",
-			HashValue: docHash,
-			HashAlgo:  "hmac-sha256",
-		})
-	}
+	// 7. Store identity hash — first_name+DOB anchors identity to the person, not the document.
+	// hash_value  = HMAC(value, userID+":"+secret) — user-specific, private
+	// blind_index = HMAC(value, secret)            — global, dedup only
 	if extracted.FirstName != "" && extracted.DOB != "" {
 		combo := extracted.FirstName + "|" + extracted.DOB
-		hash := computeHMAC(combo, cfg.HMACSecret)
 		_ = svc.hashRepo.DeleteByUserAndField(db, params.UserID, "first_name_dob")
 		_ = svc.hashRepo.Create(db, &models.IdentityHash{
-			UserID:    params.UserID,
-			FieldName: "first_name_dob",
-			HashValue: hash,
-			HashAlgo:  "hmac-sha256",
+			UserID:     params.UserID,
+			FieldName:  "first_name_dob",
+			HashValue:  computeHMAC(combo, params.UserID+":"+cfg.HMACSecret),
+			BlindIndex: computeHMAC(combo, cfg.HMACSecret),
+			HashAlgo:   "hmac-sha256",
 		})
 	}
 
 	// 8. Enroll face in collection/FaceList.
-	faceID, indexErr := svc.p.IndexFace(ctx, refBytes, collectionID, params.UserID)
-	if indexErr == nil && faceID != "" {
-		algo := "rekognition_collection"
-		if cfg.Provider == config.ProviderAzure {
-			algo = "azure_face_list"
-		}
-		_ = svc.hashRepo.Create(db, &models.IdentityHash{
-			UserID:    params.UserID,
-			FieldName: "face_id",
-			HashValue: faceID,
-			HashAlgo:  algo,
-		})
-	}
+	_, _ = svc.p.IndexFace(ctx, refBytes, collectionID, params.UserID)
 
 	// 9. Audit log (best-effort).
 	details, _ := json.Marshal(map[string]any{

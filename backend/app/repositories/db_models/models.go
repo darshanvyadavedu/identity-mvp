@@ -23,8 +23,6 @@ type VerificationSession struct {
 	DecisionStatus    string     `gorm:"column:decision_status;default:pending"`
 	Provider          string     `gorm:"column:provider"`
 	ProviderSessionID string     `gorm:"column:provider_session_id"`
-	RetryCount        int        `gorm:"column:retry_count;default:0"`
-	ExpiresAt         *time.Time `gorm:"column:expires_at"`
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -37,16 +35,15 @@ func (s *VerificationSession) BeforeCreate(_ *gorm.DB) error {
 // ── BiometricCheck ────────────────────────────────────────────────────────────
 
 type BiometricCheck struct {
-	CheckID        string     `gorm:"primaryKey;column:check_id"`
-	SessionID      string     `gorm:"column:session_id;not null;index"`
-	UserID         string     `gorm:"column:user_id;not null;index"`
-	EntityType     string     `gorm:"column:entity_type;not null"`
-	Status         string     `gorm:"column:status;default:pending"`
-	AttemptNumber  int        `gorm:"column:attempt_number;default:1"`
-	AttemptedAt    *time.Time `gorm:"column:attempted_at"`
-	EntityValue    []byte     `gorm:"column:entity_value;type:jsonb"`
-	ReferenceImage *string    `gorm:"column:reference_image;type:text"`
-	RawResponse    []byte     `gorm:"column:raw_response;type:jsonb"`
+	CheckID        string    `gorm:"primaryKey;column:check_id"`
+	SessionID      string    `gorm:"column:session_id;not null;index"`
+	UserID         string    `gorm:"column:user_id;not null;index"`
+	EntityType     string    `gorm:"column:entity_type;not null"`
+	Status         string    `gorm:"column:status;default:pending"`
+	AttemptNumber  int       `gorm:"column:attempt_number;default:1"`
+	EntityValue    []byte    `gorm:"column:entity_value;type:jsonb"`
+	ReferenceImage *string   `gorm:"column:reference_image;type:text"`
+	RawResponse    []byte    `gorm:"column:raw_response;type:jsonb"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
@@ -59,13 +56,14 @@ func (b *BiometricCheck) BeforeCreate(_ *gorm.DB) error {
 // ── IdentityHash ──────────────────────────────────────────────────────────────
 
 type IdentityHash struct {
-	HashID    string `gorm:"primaryKey;column:hash_id"`
-	UserID    string `gorm:"column:user_id;not null;index"`
-	FieldName string `gorm:"column:field_name;not null"`
-	HashValue string `gorm:"column:hash_value;not null"`
-	HashAlgo  string `gorm:"column:hash_algo;not null"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	HashID     string `gorm:"primaryKey;column:hash_id"`
+	UserID     string `gorm:"column:user_id;not null;index"`
+	FieldName  string `gorm:"column:field_name;not null"`
+	HashValue  string `gorm:"column:hash_value;not null"`
+	BlindIndex string `gorm:"column:blind_index"`
+	HashAlgo   string `gorm:"column:hash_algo;not null"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 func (h *IdentityHash) BeforeCreate(_ *gorm.DB) error {
@@ -81,6 +79,7 @@ type ConsentRecord struct {
 	SessionID string `gorm:"column:session_id;index"`
 	FieldName string `gorm:"column:field_name"`
 	Consented bool   `gorm:"column:consented"`
+	HashValue string `gorm:"column:hash_value"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
