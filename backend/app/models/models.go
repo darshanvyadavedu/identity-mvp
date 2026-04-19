@@ -157,4 +157,3 @@ type AuditLog struct {
 	Details   []byte
 	CreatedAt time.Time
 }
-

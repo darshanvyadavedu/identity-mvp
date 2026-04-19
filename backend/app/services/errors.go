@@ -15,7 +15,7 @@ type serviceError struct {
 	httpStatus  int
 }
 
-func (e *serviceError) HttpStatus() int    { return e.httpStatus }
+func (e *serviceError) HttpStatus() int     { return e.httpStatus }
 func (e *serviceError) Description() string { return e.description }
 func (e *serviceError) Code() string        { return e.code }
 

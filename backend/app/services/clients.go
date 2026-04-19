@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	providerOnce sync.Once
+	providerOnce   sync.Once
 	activeProvider provider.IdentityProvider
 )
 
