@@ -31,14 +31,12 @@ type ConsentServiceInterface interface {
 }
 
 type consentService struct {
-	sessionRepo  repositories.VerificationSessionRepoInterface
-	checkRepo    repositories.BiometricCheckRepoInterface
-	livenessRepo repositories.LivenessResultRepoInterface
-	docScanRepo  repositories.DocumentScanRepoInterface
-	consentRepo  repositories.ConsentRepoInterface
-	hashRepo     repositories.IdentityHashRepoInterface
-	auditRepo    repositories.AuditRepoInterface
-	p            provider.IdentityProvider
+	sessionRepo repositories.VerificationSessionRepoInterface
+	checkRepo   repositories.BiometricCheckRepoInterface
+	consentRepo repositories.ConsentRepoInterface
+	hashRepo    repositories.IdentityHashRepoInterface
+	auditRepo   repositories.AuditRepoInterface
+	p           provider.IdentityProvider
 }
 
 // ConsentServiceOption configures a consentService.
@@ -47,14 +45,12 @@ type ConsentServiceOption func(*consentService)
 // NewConsentService returns a new ConsentServiceInterface with default dependencies.
 func NewConsentService(opts ...ConsentServiceOption) ConsentServiceInterface {
 	svc := &consentService{
-		sessionRepo:  repositories.NewVerificationSessionRepo(),
-		checkRepo:    repositories.NewBiometricCheckRepo(),
-		livenessRepo: repositories.NewLivenessResultRepo(),
-		docScanRepo:  repositories.NewDocumentScanRepo(),
-		consentRepo:  repositories.NewConsentRepo(),
-		hashRepo:     repositories.NewIdentityHashRepo(),
-		auditRepo:    repositories.NewAuditRepo(),
-		p:            Active(),
+		sessionRepo: repositories.NewVerificationSessionRepo(),
+		checkRepo:   repositories.NewBiometricCheckRepo(),
+		consentRepo: repositories.NewConsentRepo(),
+		hashRepo:    repositories.NewIdentityHashRepo(),
+		auditRepo:   repositories.NewAuditRepo(),
+		p:           Active(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -68,14 +64,6 @@ func ConfigureConsentSessionRepo(r repositories.VerificationSessionRepoInterface
 
 func ConfigureConsentCheckRepo(r repositories.BiometricCheckRepoInterface) ConsentServiceOption {
 	return func(s *consentService) { s.checkRepo = r }
-}
-
-func ConfigureConsentLivenessRepo(r repositories.LivenessResultRepoInterface) ConsentServiceOption {
-	return func(s *consentService) { s.livenessRepo = r }
-}
-
-func ConfigureConsentDocScanRepo(r repositories.DocumentScanRepoInterface) ConsentServiceOption {
-	return func(s *consentService) { s.docScanRepo = r }
 }
 
 func ConfigureConsentRepo(r repositories.ConsentRepoInterface) ConsentServiceOption {
@@ -103,23 +91,14 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		return nil, ErrBadRequest(fmt.Sprintf("session is not verified (current: %s)", session.DecisionStatus))
 	}
 
-	// 2. Load latest doc_scan result.
-	docCheck, err := svc.checkRepo.GetLatestBySessionAndType(db, params.SessionID, models.CheckTypeDocScan)
+	// 2. Load doc scan entity value from biometric check.
+	docCheck, err := svc.checkRepo.GetLatestBySessionAndType(db, params.SessionID, models.EntityTypeDocScan)
 	if err != nil {
 		return nil, ErrInternalServer("doc scan check not found")
 	}
-	docScan, err := svc.docScanRepo.GetByCheckID(db, docCheck.CheckID)
-	if err != nil {
-		return nil, ErrInternalServer("doc scan result not found")
-	}
-
-	// 3. Reconstruct field→value map from extracted fields.
 	var extracted provider.DocumentData
-	if len(docScan.ExtractedFields) > 0 {
-		_ = json.Unmarshal(docScan.ExtractedFields, &extracted)
-	}
-	if docScan.IssuingCountry != "" {
-		extracted.IssuingCountry = docScan.IssuingCountry
+	if len(docCheck.EntityValue) > 0 {
+		_ = json.Unmarshal(docCheck.EntityValue, &extracted)
 	}
 
 	fieldValues := map[string]string{
@@ -132,7 +111,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		"address":         extracted.Address,
 	}
 
-	// 4. Document duplicate check via doc_number HMAC.
+	// 3. Document duplicate check via doc_number HMAC.
 	docNumber := extracted.IDNumber
 	if docNumber != "" {
 		docHash := computeHMAC(docNumber, cfg.HMACSecret)
@@ -148,21 +127,17 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		}
 	}
 
-	// 5. Load liveness reference image for biometric dedup.
-	livenessCheck, err := svc.checkRepo.GetBySessionAndType(db, params.SessionID, models.CheckTypeLiveness)
+	// 4. Load liveness reference image from biometric check.
+	livenessCheck, err := svc.checkRepo.GetBySessionAndType(db, params.SessionID, models.EntityTypeLiveness)
 	if err != nil {
 		return nil, ErrInternalServer("liveness check not found")
 	}
-	livenessResult, err := svc.livenessRepo.GetByCheckID(db, livenessCheck.CheckID)
-	if err != nil {
-		return nil, ErrInternalServer("liveness result not found")
-	}
-	refBytes, err := dataURLToBytes(livenessResult.ReferenceImage)
+	refBytes, err := dataURLToBytes(livenessCheck.ReferenceImage)
 	if err != nil {
 		return nil, ErrInternalServer("decode reference image: " + err.Error())
 	}
 
-	// 6. Biometric duplicate check — SearchFacesByImage.
+	// 5. Biometric duplicate check — SearchFacesByImage.
 	searchResult, searchErr := svc.p.SearchFacesByImage(ctx, refBytes, collectionID)
 	if searchErr == nil && searchResult != nil && searchResult.Found {
 		if searchResult.MatchedUserID != params.UserID {
@@ -172,7 +147,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		_ = svc.p.DeleteFace(ctx, collectionID, searchResult.FaceID)
 	}
 
-	// 7. Store consent_records + encrypted verified_data.
+	// 6. Store consent_records + encrypted verified_data.
 	for _, fieldName := range params.Fields {
 		value, ok := fieldValues[fieldName]
 		if !ok || value == "" {
@@ -207,7 +182,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		}
 	}
 
-	// 8. Store identity hashes.
+	// 7. Store identity hashes.
 	if docNumber != "" {
 		docHash := computeHMAC(docNumber, cfg.HMACSecret)
 		_ = svc.hashRepo.Create(db, &models.IdentityHash{
@@ -229,7 +204,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		})
 	}
 
-	// 9. Enroll face in collection/FaceList.
+	// 8. Enroll face in collection/FaceList.
 	faceID, indexErr := svc.p.IndexFace(ctx, refBytes, collectionID, params.UserID)
 	if indexErr == nil && faceID != "" {
 		algo := "rekognition_collection"
@@ -244,7 +219,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		})
 	}
 
-	// 10. Audit log (best-effort).
+	// 9. Audit log (best-effort).
 	details, _ := json.Marshal(map[string]any{
 		"fields": params.Fields,
 	})

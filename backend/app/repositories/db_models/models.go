@@ -37,78 +37,22 @@ func (s *VerificationSession) BeforeCreate(_ *gorm.DB) error {
 // ── BiometricCheck ────────────────────────────────────────────────────────────
 
 type BiometricCheck struct {
-	CheckID       string     `gorm:"primaryKey;column:check_id"`
-	SessionID     string     `gorm:"column:session_id;not null;index"`
-	UserID        string     `gorm:"column:user_id;not null;index"`
-	CheckType     string     `gorm:"column:check_type;not null"`
-	Status        string     `gorm:"column:status;default:pending"`
-	AttemptNumber int        `gorm:"column:attempt_number;default:1"`
-	AttemptedAt   *time.Time `gorm:"column:attempted_at"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	CheckID        string     `gorm:"primaryKey;column:check_id"`
+	SessionID      string     `gorm:"column:session_id;not null;index"`
+	UserID         string     `gorm:"column:user_id;not null;index"`
+	EntityType     string     `gorm:"column:entity_type;not null"`
+	Status         string     `gorm:"column:status;default:pending"`
+	AttemptNumber  int        `gorm:"column:attempt_number;default:1"`
+	AttemptedAt    *time.Time `gorm:"column:attempted_at"`
+	EntityValue    []byte     `gorm:"column:entity_value;type:jsonb"`
+	ReferenceImage *string    `gorm:"column:reference_image;type:text"`
+	RawResponse    []byte     `gorm:"column:raw_response;type:jsonb"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func (b *BiometricCheck) BeforeCreate(_ *gorm.DB) error {
 	setUUID(&b.CheckID)
-	return nil
-}
-
-// ── LivenessResult ────────────────────────────────────────────────────────────
-
-type LivenessResult struct {
-	ResultID        string  `gorm:"primaryKey;column:result_id"`
-	CheckID         string  `gorm:"uniqueIndex;column:check_id;not null"`
-	Verdict         string  `gorm:"column:verdict;not null"`
-	ConfidenceScore float64 `gorm:"column:confidence_score;type:numeric(5,4)"`
-	FailureReason   string  `gorm:"column:failure_reason"`
-	SDKVersion      string  `gorm:"column:sdk_version"`
-	ReferenceImage  string  `gorm:"column:reference_image;type:text"`
-	RawResponse     []byte  `gorm:"column:raw_response;type:jsonb"`
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
-
-func (l *LivenessResult) BeforeCreate(_ *gorm.DB) error {
-	setUUID(&l.ResultID)
-	return nil
-}
-
-// ── DocumentScanResult ────────────────────────────────────────────────────────
-
-type DocumentScanResult struct {
-	ScanID          string `gorm:"primaryKey;column:scan_id"`
-	CheckID         string `gorm:"uniqueIndex;column:check_id;not null"`
-	DocumentType    string `gorm:"column:document_type"`
-	IssuingCountry  string `gorm:"column:issuing_country"`
-	IDNumberHMAC    string `gorm:"column:id_number_hmac"`
-	ExtractedFields []byte `gorm:"column:extracted_fields;type:jsonb"`
-	RawResponse     []byte `gorm:"column:raw_response;type:jsonb"`
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-}
-
-func (d *DocumentScanResult) BeforeCreate(_ *gorm.DB) error {
-	setUUID(&d.ScanID)
-	return nil
-}
-
-// ── FaceMatchResult ───────────────────────────────────────────────────────────
-
-type FaceMatchResult struct {
-	MatchID     string  `gorm:"primaryKey;column:match_id"`
-	CheckID     string  `gorm:"uniqueIndex;column:check_id;not null"`
-	Confidence  float64 `gorm:"column:confidence;type:numeric(5,4)"`
-	Threshold   float64 `gorm:"column:threshold;type:numeric(5,4);default:0.8000"`
-	Passed      bool    `gorm:"column:passed"`
-	SourceA     string  `gorm:"column:source_a"`
-	SourceB     string  `gorm:"column:source_b"`
-	RawResponse []byte  `gorm:"column:raw_response;type:jsonb"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-}
-
-func (f *FaceMatchResult) BeforeCreate(_ *gorm.DB) error {
-	setUUID(&f.MatchID)
 	return nil
 }
 

@@ -96,7 +96,7 @@ func (svc *sessionService) CreateSession(ctx context.Context, db *gorm.DB, param
 	_, err = svc.checkRepo.Create(db, &models.BiometricCheck{
 		SessionID:     session.SessionID,
 		UserID:        params.UserID,
-		CheckType:     models.CheckTypeLiveness,
+		EntityType:    models.EntityTypeLiveness,
 		Status:        models.CheckStatusPending,
 		AttemptNumber: 1,
 		AttemptedAt:   &now,

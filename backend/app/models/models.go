@@ -37,12 +37,12 @@ type VerificationSession struct {
 
 // ── BiometricCheck ────────────────────────────────────────────────────────────
 
-type CheckType string
+type EntityType string
 
 const (
-	CheckTypeLiveness  CheckType = "liveness"
-	CheckTypeDocScan   CheckType = "doc_scan"
-	CheckTypeFaceMatch CheckType = "face_match"
+	EntityTypeLiveness  EntityType = "liveness"
+	EntityTypeDocScan   EntityType = "doc_scan"
+	EntityTypeFaceMatch EntityType = "face_match"
 )
 
 type CheckStatus string
@@ -54,60 +54,33 @@ const (
 )
 
 type BiometricCheck struct {
-	CheckID       string
-	SessionID     string
-	UserID        string
-	CheckType     CheckType
-	Status        CheckStatus
-	AttemptNumber int
-	AttemptedAt   *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	CheckID        string
+	SessionID      string
+	UserID         string
+	EntityType     EntityType
+	Status         CheckStatus
+	AttemptNumber  int
+	AttemptedAt    *time.Time
+	EntityValue    []byte  // unmarshal into typed payload struct based on EntityType
+	ReferenceImage string  // liveness image data URL
+	RawResponse    []byte  // full provider response — audit only
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
-// ── LivenessResult ────────────────────────────────────────────────────────────
+// ── Entity value payload structs (not DB models) ──────────────────────────────
 
-type LivenessResult struct {
-	ResultID        string
-	CheckID         string
-	Verdict         string
-	ConfidenceScore float64
-	FailureReason   string
-	SDKVersion      string
-	ReferenceImage  string
-	RawResponse     []byte
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+type LivenessEntityValue struct {
+	Verdict    string  `json:"verdict"`
+	Confidence float64 `json:"confidence"`
 }
 
-// ── DocumentScanResult ────────────────────────────────────────────────────────
-
-type DocumentScanResult struct {
-	ScanID          string
-	CheckID         string
-	DocumentType    string
-	IssuingCountry  string
-	IDNumberHMAC    string
-	ExtractedFields []byte
-	RawResponse     []byte
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+type FaceMatchEntityValue struct {
+	Confidence float64 `json:"confidence"`
+	Passed     bool    `json:"passed"`
 }
 
-// ── FaceMatchResult ───────────────────────────────────────────────────────────
-
-type FaceMatchResult struct {
-	MatchID     string
-	CheckID     string
-	Confidence  float64
-	Threshold   float64
-	Passed      bool
-	SourceA     string
-	SourceB     string
-	RawResponse []byte
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-}
+// DocScan entity value uses provider.DocumentData — same JSON shape.
 
 // ── IdentityHash ──────────────────────────────────────────────────────────────
 

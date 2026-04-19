@@ -41,14 +41,11 @@ type DocumentServiceInterface interface {
 }
 
 type documentService struct {
-	sessionRepo  repositories.VerificationSessionRepoInterface
-	checkRepo    repositories.BiometricCheckRepoInterface
-	livenessRepo repositories.LivenessResultRepoInterface
-	docScanRepo  repositories.DocumentScanRepoInterface
-	faceRepo     repositories.FaceMatchRepoInterface
-	hashRepo     repositories.IdentityHashRepoInterface
-	auditRepo    repositories.AuditRepoInterface
-	p            provider.IdentityProvider
+	sessionRepo repositories.VerificationSessionRepoInterface
+	checkRepo   repositories.BiometricCheckRepoInterface
+	hashRepo    repositories.IdentityHashRepoInterface
+	auditRepo   repositories.AuditRepoInterface
+	p           provider.IdentityProvider
 }
 
 // DocumentServiceOption configures a documentService.
@@ -57,14 +54,11 @@ type DocumentServiceOption func(*documentService)
 // NewDocumentService returns a new DocumentServiceInterface with default dependencies.
 func NewDocumentService(opts ...DocumentServiceOption) DocumentServiceInterface {
 	svc := &documentService{
-		sessionRepo:  repositories.NewVerificationSessionRepo(),
-		checkRepo:    repositories.NewBiometricCheckRepo(),
-		livenessRepo: repositories.NewLivenessResultRepo(),
-		docScanRepo:  repositories.NewDocumentScanRepo(),
-		faceRepo:     repositories.NewFaceMatchRepo(),
-		hashRepo:     repositories.NewIdentityHashRepo(),
-		auditRepo:    repositories.NewAuditRepo(),
-		p:            Active(),
+		sessionRepo: repositories.NewVerificationSessionRepo(),
+		checkRepo:   repositories.NewBiometricCheckRepo(),
+		hashRepo:    repositories.NewIdentityHashRepo(),
+		auditRepo:   repositories.NewAuditRepo(),
+		p:           Active(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -78,18 +72,6 @@ func ConfigureDocSessionRepo(r repositories.VerificationSessionRepoInterface) Do
 
 func ConfigureDocCheckRepo(r repositories.BiometricCheckRepoInterface) DocumentServiceOption {
 	return func(s *documentService) { s.checkRepo = r }
-}
-
-func ConfigureDocLivenessRepo(r repositories.LivenessResultRepoInterface) DocumentServiceOption {
-	return func(s *documentService) { s.livenessRepo = r }
-}
-
-func ConfigureDocScanRepo(r repositories.DocumentScanRepoInterface) DocumentServiceOption {
-	return func(s *documentService) { s.docScanRepo = r }
-}
-
-func ConfigureDocFaceMatchRepo(r repositories.FaceMatchRepoInterface) DocumentServiceOption {
-	return func(s *documentService) { s.faceRepo = r }
 }
 
 func ConfigureDocHashRepo(r repositories.IdentityHashRepoInterface) DocumentServiceOption {
@@ -112,29 +94,25 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 		return nil, ErrBadRequest(fmt.Sprintf("liveness check must pass first (current status: %s)", session.Status))
 	}
 
-	// 2. Load liveness reference image.
-	livenessCheck, err := svc.checkRepo.GetBySessionAndType(db, params.SessionID, models.CheckTypeLiveness)
+	// 2. Load liveness reference image from biometric check.
+	livenessCheck, err := svc.checkRepo.GetBySessionAndType(db, params.SessionID, models.EntityTypeLiveness)
 	if err != nil {
 		return nil, ErrInternalServer("liveness check record not found")
 	}
-	livenessResult, err := svc.livenessRepo.GetByCheckID(db, livenessCheck.CheckID)
-	if err != nil {
-		return nil, ErrInternalServer("liveness result not found")
-	}
-	if livenessResult.ReferenceImage == "" {
+	if livenessCheck.ReferenceImage == "" {
 		return nil, ErrBadRequest("no liveness reference image on record")
 	}
-	refBytes, err := dataURLToBytes(livenessResult.ReferenceImage)
+	refBytes, err := dataURLToBytes(livenessCheck.ReferenceImage)
 	if err != nil {
 		return nil, ErrInternalServer("decode reference image: " + err.Error())
 	}
 
 	// 3. Create doc_scan biometric check.
-	docAttempts, _ := svc.checkRepo.CountBySessionAndType(db, params.SessionID, models.CheckTypeDocScan)
+	docAttempts, _ := svc.checkRepo.CountBySessionAndType(db, params.SessionID, models.EntityTypeDocScan)
 	docCheck, err := svc.checkRepo.Create(db, &models.BiometricCheck{
 		SessionID:     params.SessionID,
 		UserID:        params.UserID,
-		CheckType:     models.CheckTypeDocScan,
+		EntityType:    models.EntityTypeDocScan,
 		Status:        models.CheckStatusPending,
 		AttemptNumber: int(docAttempts) + 1,
 	})
@@ -142,7 +120,7 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 		return nil, ErrInternalServer("create doc scan check: " + err.Error())
 	}
 
-	// 4. OCR — AnalyzeID via provider document client.
+	// 4. OCR — AnalyzeID via provider.
 	docData, rawDocJSON, docExtractErr := svc.p.AnalyzeID(ctx, params.DocBytes)
 	docCheckStatus := models.CheckStatusSucceeded
 	if docExtractErr != nil {
@@ -150,18 +128,8 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 	}
 	_ = svc.checkRepo.UpdateStatus(db, docCheck.CheckID, docCheckStatus)
 
-	extractedJSON, _ := json.Marshal(docData)
-	_, err = svc.docScanRepo.Create(db, &models.DocumentScanResult{
-		CheckID:         docCheck.CheckID,
-		DocumentType:    docData.DocumentType,
-		IssuingCountry:  docData.IssuingCountry,
-		IDNumberHMAC:    computeHMAC(docData.IDNumber, cfg.HMACSecret),
-		ExtractedFields: extractedJSON,
-		RawResponse:     rawDocJSON,
-	})
-	if err != nil {
-		return nil, ErrInternalServer("save document scan result: " + err.Error())
-	}
+	entityJSON, _ := json.Marshal(docData)
+	_ = svc.checkRepo.UpdateEntityValue(db, docCheck.CheckID, entityJSON, rawDocJSON, nil)
 
 	// 5. Early duplicate check: name+DOB HMAC.
 	if docData.FirstName != "" && docData.DOB != "" {
@@ -173,12 +141,12 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 		}
 	}
 
-	// 6. Face match — create check and compare faces via provider.
-	fmAttempts, _ := svc.checkRepo.CountBySessionAndType(db, params.SessionID, models.CheckTypeFaceMatch)
+	// 6. Face match — create check and compare faces.
+	fmAttempts, _ := svc.checkRepo.CountBySessionAndType(db, params.SessionID, models.EntityTypeFaceMatch)
 	fmCheck, err := svc.checkRepo.Create(db, &models.BiometricCheck{
 		SessionID:     params.SessionID,
 		UserID:        params.UserID,
-		CheckType:     models.CheckTypeFaceMatch,
+		EntityType:    models.EntityTypeFaceMatch,
 		Status:        models.CheckStatusPending,
 		AttemptNumber: int(fmAttempts) + 1,
 	})
@@ -201,23 +169,11 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 	}
 	_ = svc.checkRepo.UpdateStatus(db, fmCheck.CheckID, fmStatus)
 
-	var threshold float64
-	if compareResult != nil {
-		threshold = compareResult.Similarity
-	}
-
-	_, err = svc.faceRepo.Create(db, &models.FaceMatchResult{
-		CheckID:     fmCheck.CheckID,
-		Confidence:  similarity / 100.0,
-		Threshold:   threshold / 100.0,
-		Passed:      passed,
-		SourceA:     "liveness_frame",
-		SourceB:     "id_document",
-		RawResponse: rawFMJSON,
+	fmEntityJSON, _ := json.Marshal(models.FaceMatchEntityValue{
+		Confidence: similarity / 100.0,
+		Passed:     passed,
 	})
-	if err != nil {
-		return nil, ErrInternalServer("save face match result: " + err.Error())
-	}
+	_ = svc.checkRepo.UpdateEntityValue(db, fmCheck.CheckID, fmEntityJSON, rawFMJSON, nil)
 
 	// 7. Update session decision.
 	decisionStatus := models.DecisionStatusVerified
@@ -246,7 +202,7 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 		FaceMatch: FaceMatchSummary{
 			Similarity: similarity,
 			Passed:     passed,
-			Threshold:  threshold,
+			Threshold:  similarity,
 		},
 	}, nil
 }
