@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
-	"sync"
 
-	"user-authentication/app/clients"
-	"user-authentication/config"
+	"user-authentication/lib/provider"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -22,57 +20,37 @@ const (
 	searchFaceThreshold  = float32(95.0)
 )
 
-var (
-	faceOnce     sync.Once
-	faceInstance *FaceClient
-)
-
-// FaceClient implements clients.FaceClientInterface using AWS Rekognition.
-type FaceClient struct {
+type faceClient struct {
 	client *rekognition.Client
 }
 
-// FaceClientOption configures a FaceClient.
-type FaceClientOption func(*FaceClient)
-
-// NewFaceClient returns the singleton FaceClient, initialising it once from config.
-func NewFaceClient(opts ...FaceClientOption) clients.FaceClientInterface {
-	faceOnce.Do(func() {
-		cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(config.Get().AWSRegion))
-		if err != nil {
-			log.Fatalf("aws: load config for rekognition: %v", err)
-		}
-		faceInstance = &FaceClient{client: rekognition.NewFromConfig(cfg)}
-	})
-	for _, opt := range opts {
-		opt(faceInstance)
+func newFaceClient(region string) (*faceClient, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, err
 	}
-	return faceInstance
+	return &faceClient{client: rekognition.NewFromConfig(cfg)}, nil
 }
 
-// EnsureCollection creates the Rekognition face collection if it doesn't exist.
-// Call once at startup; safe to call even if the collection already exists.
-func EnsureCollection(ctx context.Context) error {
-	c := NewFaceClient().(*FaceClient)
-	collectionID := config.Get().RekognitionCollectionID
+func (c *faceClient) ensureCollection(ctx context.Context, collectionID string) error {
 	_, err := c.client.CreateCollection(ctx, &rekognition.CreateCollectionInput{
 		CollectionId: aws.String(collectionID),
 	})
 	return err
 }
 
-func (c *FaceClient) CreateLivenessSession(ctx context.Context, _ string) (*clients.CreateSessionResult, error) {
+func (c *faceClient) createLivenessSession(ctx context.Context) (*provider.CreateSessionResult, error) {
 	out, err := c.client.CreateFaceLivenessSession(ctx, &rekognition.CreateFaceLivenessSessionInput{})
 	if err != nil {
 		return nil, err
 	}
-	return &clients.CreateSessionResult{
+	return &provider.CreateSessionResult{
 		ProviderSessionID: aws.ToString(out.SessionId),
 	}, nil
 }
 
-func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID string) (*clients.LivenessResult, error) {
+func (c *faceClient) getLivenessResult(ctx context.Context, providerSessionID string) (*provider.LivenessResult, error) {
 	out, err := c.client.GetFaceLivenessSessionResults(ctx, &rekognition.GetFaceLivenessSessionResultsInput{
 		SessionId: aws.String(providerSessionID),
 	})
@@ -99,7 +77,7 @@ func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID st
 		refDataURL = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(refBytes)
 	}
 
-	return &clients.LivenessResult{
+	return &provider.LivenessResult{
 		Complete:       true,
 		ProviderStatus: awsStatus,
 		Verdict:        verdict,
@@ -110,7 +88,7 @@ func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID st
 	}, nil
 }
 
-func (c *FaceClient) CompareFaces(ctx context.Context, refBytes, docBytes []byte) (*clients.CompareFacesResult, error) {
+func (c *faceClient) compareFaces(ctx context.Context, refBytes, docBytes []byte) (*provider.CompareFacesResult, error) {
 	out, err := c.client.CompareFaces(ctx, &rekognition.CompareFacesInput{
 		SourceImage:         &rektypes.Image{Bytes: refBytes},
 		TargetImage:         &rektypes.Image{Bytes: docBytes},
@@ -121,17 +99,17 @@ func (c *FaceClient) CompareFaces(ctx context.Context, refBytes, docBytes []byte
 	}
 	raw, _ := json.Marshal(out)
 	if len(out.FaceMatches) == 0 {
-		return &clients.CompareFacesResult{RawResponse: raw}, nil
+		return &provider.CompareFacesResult{RawResponse: raw}, nil
 	}
 	similarity := float64(aws.ToFloat32(out.FaceMatches[0].Similarity))
-	return &clients.CompareFacesResult{
+	return &provider.CompareFacesResult{
 		Similarity:  similarity,
 		Passed:      similarity >= float64(compareFaceThreshold),
 		RawResponse: raw,
 	}, nil
 }
 
-func (c *FaceClient) SearchFacesByImage(ctx context.Context, imgBytes []byte, collectionID string) (*clients.SearchFacesResult, error) {
+func (c *faceClient) searchFacesByImage(ctx context.Context, imgBytes []byte, collectionID string) (*provider.SearchFacesResult, error) {
 	out, err := c.client.SearchFacesByImage(ctx, &rekognition.SearchFacesByImageInput{
 		CollectionId:       aws.String(collectionID),
 		Image:              &rektypes.Image{Bytes: imgBytes},
@@ -142,17 +120,17 @@ func (c *FaceClient) SearchFacesByImage(ctx context.Context, imgBytes []byte, co
 		return nil, err
 	}
 	if len(out.FaceMatches) == 0 {
-		return &clients.SearchFacesResult{Found: false}, nil
+		return &provider.SearchFacesResult{Found: false}, nil
 	}
 	match := out.FaceMatches[0]
-	return &clients.SearchFacesResult{
+	return &provider.SearchFacesResult{
 		Found:         true,
 		FaceID:        aws.ToString(match.Face.FaceId),
 		MatchedUserID: aws.ToString(match.Face.ExternalImageId),
 	}, nil
 }
 
-func (c *FaceClient) DeleteFace(ctx context.Context, collectionID, faceID string) error {
+func (c *faceClient) deleteFace(ctx context.Context, collectionID, faceID string) error {
 	_, err := c.client.DeleteFaces(ctx, &rekognition.DeleteFacesInput{
 		CollectionId: aws.String(collectionID),
 		FaceIds:      []string{faceID},
@@ -160,7 +138,7 @@ func (c *FaceClient) DeleteFace(ctx context.Context, collectionID, faceID string
 	return err
 }
 
-func (c *FaceClient) IndexFace(ctx context.Context, imgBytes []byte, collectionID, userID string) (string, error) {
+func (c *faceClient) indexFace(ctx context.Context, imgBytes []byte, collectionID, userID string) (string, error) {
 	out, err := c.client.IndexFaces(ctx, &rekognition.IndexFacesInput{
 		CollectionId:        aws.String(collectionID),
 		Image:               &rektypes.Image{Bytes: imgBytes},
@@ -176,3 +154,6 @@ func (c *FaceClient) IndexFace(ctx context.Context, imgBytes []byte, collectionI
 	}
 	return aws.ToString(out.FaceRecords[0].Face.FaceId), nil
 }
+
+// Silence unused import warning for log if not used elsewhere.
+var _ = log.Printf

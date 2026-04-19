@@ -158,16 +158,3 @@ type AuditLog struct {
 	CreatedAt time.Time
 }
 
-// ── DocumentData ──────────────────────────────────────────────────────────────
-
-// DocumentData holds structured fields extracted from an identity document.
-type DocumentData struct {
-	FirstName      string `json:"firstName,omitempty"`
-	LastName       string `json:"lastName,omitempty"`
-	DOB            string `json:"dob,omitempty"`
-	IDNumber       string `json:"idNumber,omitempty"`
-	Expiry         string `json:"expiry,omitempty"`
-	IssuingCountry string `json:"issuingCountry,omitempty"`
-	Address        string `json:"address,omitempty"`
-	DocumentType   string `json:"documentType,omitempty"`
-}

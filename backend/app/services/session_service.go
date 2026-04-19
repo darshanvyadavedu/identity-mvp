@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"time"
 
-	"user-authentication/app/clients"
 	"user-authentication/app/models"
 	"user-authentication/app/repositories"
 	"user-authentication/config"
+	"user-authentication/lib/provider"
 
 	"gorm.io/gorm"
 )
@@ -36,7 +36,7 @@ type sessionService struct {
 	sessionRepo repositories.VerificationSessionRepoInterface
 	checkRepo   repositories.BiometricCheckRepoInterface
 	auditRepo   repositories.AuditRepoInterface
-	faceClient  clients.FaceClientInterface
+	p           provider.IdentityProvider
 }
 
 // SessionServiceOption configures a sessionService.
@@ -48,7 +48,7 @@ func NewSessionService(opts ...SessionServiceOption) SessionServiceInterface {
 		sessionRepo: repositories.NewVerificationSessionRepo(),
 		checkRepo:   repositories.NewBiometricCheckRepo(),
 		auditRepo:   repositories.NewAuditRepo(),
-		faceClient:  newFaceClient(),
+		p:           Active(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -68,15 +68,11 @@ func ConfigureSessionAuditRepo(r repositories.AuditRepoInterface) SessionService
 	return func(s *sessionService) { s.auditRepo = r }
 }
 
-func ConfigureSessionFaceClient(c clients.FaceClientInterface) SessionServiceOption {
-	return func(s *sessionService) { s.faceClient = c }
-}
-
 func (svc *sessionService) CreateSession(ctx context.Context, db *gorm.DB, params *CreateSessionParams) (*CreateSessionResult, ServiceErrorInterface) {
 	provider := string(config.Get().Provider)
 
 	// 1. Create provider liveness session.
-	providerSession, err := svc.faceClient.CreateLivenessSession(ctx, params.UserID)
+	providerSession, err := svc.p.CreateLivenessSession(ctx, params.UserID)
 	if err != nil {
 		return nil, ErrBadGateway("create liveness session: " + err.Error())
 	}

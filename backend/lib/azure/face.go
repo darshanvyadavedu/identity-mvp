@@ -11,8 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"user-authentication/app/clients"
-	"user-authentication/config"
+	"user-authentication/lib/provider"
 )
 
 const (
@@ -22,40 +21,9 @@ const (
 	azureSearchMinConf = float64(0.90)
 )
 
-// FaceClient implements clients.FaceClientInterface using the Azure Face API.
-type FaceClient struct {
+type faceClient struct {
 	endpoint string
 	key      string
-}
-
-// FaceClientOption configures a FaceClient.
-type FaceClientOption func(*FaceClient)
-
-// NewFaceClient creates an Azure FaceClient reading credentials from config.
-func NewFaceClient(opts ...FaceClientOption) clients.FaceClientInterface {
-	cfg := config.Get()
-	c := &FaceClient{endpoint: cfg.AzureFaceEndpoint, key: cfg.AzureFaceKey}
-	for _, opt := range opts {
-		opt(c)
-	}
-	return c
-}
-
-// EnsureFaceList creates the Azure FaceList if it doesn't already exist.
-// Call once at startup; safe if the list already exists.
-func EnsureFaceList(ctx context.Context) error {
-	cfg := config.Get()
-	c := &FaceClient{endpoint: cfg.AzureFaceEndpoint, key: cfg.AzureFaceKey}
-	body, _ := json.Marshal(map[string]string{
-		"name":             cfg.AzureFaceListID,
-		"recognitionModel": "recognition_04",
-	})
-	_, err := c.do(ctx, http.MethodPut,
-		"/face/"+faceV10APIVersion+"/facelists/"+cfg.AzureFaceListID, "application/json", body)
-	if err != nil && strings.Contains(err.Error(), "409") {
-		return nil // already exists
-	}
-	return err
 }
 
 // ── Liveness ──────────────────────────────────────────────────────────────────
@@ -72,7 +40,7 @@ type createLivenessSessionResponse struct {
 	AuthToken string `json:"authToken"`
 }
 
-func (c *FaceClient) CreateLivenessSession(ctx context.Context, userID string) (*clients.CreateSessionResult, error) {
+func (c *faceClient) createLivenessSession(ctx context.Context, userID string) (*provider.CreateSessionResult, error) {
 	body, _ := json.Marshal(createLivenessSessionRequest{
 		LivenessOperationMode:        "PassiveActive",
 		DeviceCorrelationID:          userID,
@@ -88,21 +56,20 @@ func (c *FaceClient) CreateLivenessSession(ctx context.Context, userID string) (
 	if err := json.Unmarshal(resp, &out); err != nil {
 		return nil, err
 	}
-	return &clients.CreateSessionResult{
+	return &provider.CreateSessionResult{
 		ProviderSessionID: out.SessionID,
 		AuthToken:         out.AuthToken,
 	}, nil
 }
 
 type livenessSessionResult struct {
-	SessionID string `json:"sessionId"`
-	Status    string `json:"status"` // NotStarted | Running | ResultAvailable | Succeeded | Failed | Canceled
-	Results   struct {
+	Status  string `json:"status"`
+	Results struct {
 		Attempts []struct {
 			AttemptID     int    `json:"attemptId"`
 			AttemptStatus string `json:"attemptStatus"`
 			Result        *struct {
-				LivenessDecision string `json:"livenessDecision"` // realface | spoofface | uncertain
+				LivenessDecision string `json:"livenessDecision"`
 				SessionImageID   string `json:"sessionImageId"`
 			} `json:"result"`
 			Error *struct {
@@ -113,7 +80,7 @@ type livenessSessionResult struct {
 	} `json:"results"`
 }
 
-func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID string) (*clients.LivenessResult, error) {
+func (c *faceClient) getLivenessResult(ctx context.Context, providerSessionID string) (*provider.LivenessResult, error) {
 	raw, err := c.do(ctx, http.MethodGet,
 		"/face/"+faceAPIVersion+"/detectLiveness-sessions/"+providerSessionID, "", nil)
 	if err != nil {
@@ -125,17 +92,11 @@ func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID st
 		return nil, err
 	}
 
-	// Session still in progress — return without downloading an image.
 	if result.Status != "Succeeded" && result.Status != "ResultAvailable" {
-		return &clients.LivenessResult{
-			Complete:       false,
-			ProviderStatus: result.Status,
-		}, nil
+		return &provider.LivenessResult{Complete: false, ProviderStatus: result.Status}, nil
 	}
 
-	// Parse verdict from the last attempt.
-	var verdict string
-	var sessionImageID string
+	var verdict, sessionImageID string
 	if attempts := result.Results.Attempts; len(attempts) > 0 {
 		latest := attempts[len(attempts)-1]
 		if latest.Result != nil {
@@ -151,11 +112,10 @@ func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID st
 		}
 	}
 
-	// Download captured face image when liveness passed.
 	var refBytes []byte
 	var refDataURL string
 	if verdict == "live" && sessionImageID != "" {
-		log.Printf("[azure] downloading session image: imageID=%s", sessionImageID)
+		log.Printf("[azure] downloading session image: %s", sessionImageID)
 		imgBytes, imgErr := c.do(ctx, http.MethodGet,
 			"/face/"+faceAPIVersion+"/sessionImages/"+sessionImageID, "", nil)
 		if imgErr != nil {
@@ -167,7 +127,7 @@ func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID st
 		}
 	}
 
-	return &clients.LivenessResult{
+	return &provider.LivenessResult{
 		Complete:       true,
 		ProviderStatus: result.Status,
 		Verdict:        verdict,
@@ -177,7 +137,7 @@ func (c *FaceClient) GetLivenessResult(ctx context.Context, providerSessionID st
 	}, nil
 }
 
-// ── Face detect & verify ──────────────────────────────────────────────────────
+// ── Face compare & dedup ──────────────────────────────────────────────────────
 
 type detectedFace struct {
 	FaceID string `json:"faceId"`
@@ -185,10 +145,10 @@ type detectedFace struct {
 
 type verifyResponse struct {
 	IsIdentical bool    `json:"isIdentical"`
-	Confidence  float64 `json:"confidence"` // 0.0–1.0
+	Confidence  float64 `json:"confidence"`
 }
 
-func (c *FaceClient) detectFace(ctx context.Context, imgBytes []byte) (string, error) {
+func (c *faceClient) detectFace(ctx context.Context, imgBytes []byte) (string, error) {
 	resp, err := c.do(ctx, http.MethodPost,
 		"/face/"+faceV10APIVersion+"/detect?detectionModel=detection_03&returnFaceId=true&recognitionModel=recognition_04",
 		"application/octet-stream", imgBytes)
@@ -205,14 +165,13 @@ func (c *FaceClient) detectFace(ctx context.Context, imgBytes []byte) (string, e
 	return faces[0].FaceID, nil
 }
 
-func (c *FaceClient) CompareFaces(ctx context.Context, refBytes, docBytes []byte) (*clients.CompareFacesResult, error) {
+func (c *faceClient) compareFaces(ctx context.Context, refBytes, docBytes []byte) (*provider.CompareFacesResult, error) {
 	selfieID, err1 := c.detectFace(ctx, refBytes)
 	docFaceID, err2 := c.detectFace(ctx, docBytes)
 	log.Printf("[azure] face compare: selfieID=%q err=%v  docFaceID=%q err=%v", selfieID, err1, docFaceID, err2)
 	if err1 != nil || err2 != nil {
-		return &clients.CompareFacesResult{}, nil // no match if detection fails
+		return &provider.CompareFacesResult{}, nil
 	}
-
 	body, _ := json.Marshal(map[string]string{"faceId1": selfieID, "faceId2": docFaceID})
 	resp, err := c.do(ctx, http.MethodPost, "/face/"+faceV10APIVersion+"/verify", "application/json", body)
 	if err != nil {
@@ -223,13 +182,11 @@ func (c *FaceClient) CompareFaces(ctx context.Context, refBytes, docBytes []byte
 		return nil, err
 	}
 	similarity := out.Confidence * 100
-	return &clients.CompareFacesResult{
+	return &provider.CompareFacesResult{
 		Similarity: similarity,
 		Passed:     out.Confidence >= azureFaceThreshold,
 	}, nil
 }
-
-// ── FaceList (biometric dedup) ────────────────────────────────────────────────
 
 type findSimilarRequest struct {
 	FaceID                     string `json:"faceId"`
@@ -244,42 +201,35 @@ type similarFace struct {
 	UserData        string  `json:"userData"`
 }
 
-func (c *FaceClient) SearchFacesByImage(ctx context.Context, imgBytes []byte, faceListID string) (*clients.SearchFacesResult, error) {
+func (c *faceClient) searchFacesByImage(ctx context.Context, imgBytes []byte, faceListID string) (*provider.SearchFacesResult, error) {
 	faceID, err := c.detectFace(ctx, imgBytes)
 	if err != nil {
-		return &clients.SearchFacesResult{Found: false}, nil // no match if detection fails
+		return &provider.SearchFacesResult{Found: false}, nil
 	}
-
 	body, _ := json.Marshal(findSimilarRequest{
-		FaceID:                     faceID,
-		FaceListID:                 faceListID,
-		MaxNumOfCandidatesReturned: 1,
-		Mode:                       "matchPerson",
+		FaceID: faceID, FaceListID: faceListID,
+		MaxNumOfCandidatesReturned: 1, Mode: "matchPerson",
 	})
 	resp, err := c.do(ctx, http.MethodPost, "/face/"+faceV10APIVersion+"/findsimilars", "application/json", body)
 	if err != nil {
-		return &clients.SearchFacesResult{Found: false}, nil
+		return &provider.SearchFacesResult{Found: false}, nil
 	}
 	var matches []similarFace
 	if err := json.Unmarshal(resp, &matches); err != nil || len(matches) == 0 {
-		return &clients.SearchFacesResult{Found: false}, nil
+		return &provider.SearchFacesResult{Found: false}, nil
 	}
 	m := matches[0]
 	if m.Confidence < azureSearchMinConf {
-		return &clients.SearchFacesResult{Found: false}, nil
+		return &provider.SearchFacesResult{Found: false}, nil
 	}
-	return &clients.SearchFacesResult{
-		Found:         true,
-		FaceID:        m.PersistedFaceID,
-		MatchedUserID: m.UserData,
-	}, nil
+	return &provider.SearchFacesResult{Found: true, FaceID: m.PersistedFaceID, MatchedUserID: m.UserData}, nil
 }
 
 type addFaceResponse struct {
 	PersistedFaceID string `json:"persistedFaceId"`
 }
 
-func (c *FaceClient) IndexFace(ctx context.Context, imgBytes []byte, faceListID, userID string) (string, error) {
+func (c *faceClient) indexFace(ctx context.Context, imgBytes []byte, faceListID, userID string) (string, error) {
 	path := fmt.Sprintf("/face/"+faceV10APIVersion+"/facelists/%s/persistedFaces?userData=%s", faceListID, userID)
 	resp, err := c.do(ctx, http.MethodPost, path, "application/octet-stream", imgBytes)
 	if err != nil {
@@ -292,7 +242,7 @@ func (c *FaceClient) IndexFace(ctx context.Context, imgBytes []byte, faceListID,
 	return out.PersistedFaceID, nil
 }
 
-func (c *FaceClient) DeleteFace(ctx context.Context, faceListID, persistedFaceID string) error {
+func (c *faceClient) deleteFace(ctx context.Context, faceListID, persistedFaceID string) error {
 	_, err := c.do(ctx, http.MethodDelete,
 		fmt.Sprintf("/face/"+faceV10APIVersion+"/facelists/%s/persistedFaces/%s", faceListID, persistedFaceID),
 		"", nil)
@@ -301,7 +251,7 @@ func (c *FaceClient) DeleteFace(ctx context.Context, faceListID, persistedFaceID
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-func (c *FaceClient) do(ctx context.Context, method, path, contentType string, body []byte) ([]byte, error) {
+func (c *faceClient) do(ctx context.Context, method, path, contentType string, body []byte) ([]byte, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -315,13 +265,11 @@ func (c *FaceClient) do(ctx context.Context, method, path, contentType string, b
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("azure face API %s %s → %d: %s", method, path, resp.StatusCode, string(respBody))

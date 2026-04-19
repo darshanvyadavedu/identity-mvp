@@ -12,7 +12,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/julienschmidt/httprouter"
 
-	"user-authentication/app/services"
 	"user-authentication/config"
 	"user-authentication/lib/db"
 	"user-authentication/lib/web/middlewares"
@@ -27,8 +26,6 @@ func main() {
 	cfg := config.Get()
 
 	db.Connect()
-
-	services.InitProvider(context.Background())
 
 	router := httprouter.New()
 	v1.Init(router)

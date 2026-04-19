@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"user-authentication/app/clients"
 	"user-authentication/app/models"
 	"user-authentication/app/repositories"
 	"user-authentication/config"
+	"user-authentication/lib/provider"
 
 	"gorm.io/gorm"
 )
@@ -24,7 +24,7 @@ type UploadDocumentParams struct {
 type UploadDocumentResult struct {
 	SessionID      string
 	DecisionStatus string
-	Document       *models.DocumentData
+	Document       *provider.DocumentData
 	FaceMatch      FaceMatchSummary
 }
 
@@ -48,8 +48,7 @@ type documentService struct {
 	faceRepo     repositories.FaceMatchRepoInterface
 	hashRepo     repositories.IdentityHashRepoInterface
 	auditRepo    repositories.AuditRepoInterface
-	faceClient   clients.FaceClientInterface
-	docClient    clients.DocumentClientInterface
+	p            provider.IdentityProvider
 }
 
 // DocumentServiceOption configures a documentService.
@@ -65,8 +64,7 @@ func NewDocumentService(opts ...DocumentServiceOption) DocumentServiceInterface 
 		faceRepo:     repositories.NewFaceMatchRepo(),
 		hashRepo:     repositories.NewIdentityHashRepo(),
 		auditRepo:    repositories.NewAuditRepo(),
-		faceClient:   newFaceClient(),
-		docClient:    newDocumentClient(),
+		p:            Active(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -100,14 +98,6 @@ func ConfigureDocHashRepo(r repositories.IdentityHashRepoInterface) DocumentServ
 
 func ConfigureDocAuditRepo(r repositories.AuditRepoInterface) DocumentServiceOption {
 	return func(s *documentService) { s.auditRepo = r }
-}
-
-func ConfigureDocFaceClient(c clients.FaceClientInterface) DocumentServiceOption {
-	return func(s *documentService) { s.faceClient = c }
-}
-
-func ConfigureDocClient(c clients.DocumentClientInterface) DocumentServiceOption {
-	return func(s *documentService) { s.docClient = c }
 }
 
 func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, params *UploadDocumentParams) (*UploadDocumentResult, ServiceErrorInterface) {
@@ -153,7 +143,7 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 	}
 
 	// 4. OCR — AnalyzeID via provider document client.
-	docData, rawDocJSON, docExtractErr := svc.docClient.AnalyzeID(ctx, params.DocBytes)
+	docData, rawDocJSON, docExtractErr := svc.p.AnalyzeID(ctx, params.DocBytes)
 	docCheckStatus := models.CheckStatusSucceeded
 	if docExtractErr != nil {
 		docCheckStatus = models.CheckStatusFailed
@@ -196,7 +186,7 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 		return nil, ErrInternalServer("create face match check: " + err.Error())
 	}
 
-	compareResult, fmErr := svc.faceClient.CompareFaces(ctx, refBytes, params.DocBytes)
+	compareResult, fmErr := svc.p.CompareFaces(ctx, refBytes, params.DocBytes)
 	var similarity float64
 	var passed bool
 	var rawFMJSON []byte

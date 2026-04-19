@@ -335,23 +335,25 @@ function render() {
 
 // ── API calls ──────────────────────────────────────────────────────────────
 
-// POST /api/sessions → { sessionId, providerSessionId, userId }
+// POST /api/sessions → { success, api_version, data: { sessionId, providerSessionId, ... } }
 async function apiCreateSession() {
   const res = await fetch("/api/sessions", {
     method: "POST",
     headers: jsonHeaders(),
   });
   if (!res.ok) throw new Error(`Create session failed (${res.status}): ${await res.text()}`);
-  return res.json();
+  const body = await res.json();
+  return body.data ?? body; // unwrap envelope
 }
 
-// GET /api/sessions/:sessionId/result → { sessionId, livenessStatus, livenessConfidence, referenceImage }
+// GET /api/sessions/:sessionId/result
 async function apiGetLivenessResult(sid) {
   const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/result`, {
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`Get result failed (${res.status}): ${await res.text()}`);
-  return res.json();
+  const body = await res.json();
+  return body.data ?? body;
 }
 
 // POST /api/sessions/:sessionId/consent → { stored: true }
@@ -366,7 +368,8 @@ async function apiStoreConsent(sid, fields) {
     throw new Error(body.message || "Duplicate identity detected.");
   }
   if (!res.ok) throw new Error(`Consent failed (${res.status}): ${await res.text()}`);
-  return res.json();
+  const body = await res.json();
+  return body.data ?? body;
 }
 
 // POST /api/documents (multipart) → { decisionStatus, document, faceMatch }
@@ -384,7 +387,8 @@ async function apiUploadDocument(sid, file) {
     throw Object.assign(new Error(body.message || "Duplicate identity detected."), { duplicate: true });
   }
   if (!res.ok) throw new Error(`Document upload failed (${res.status}): ${await res.text()}`);
-  return res.json();
+  const body = await res.json();
+  return body.data ?? body;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -440,7 +444,9 @@ async function start() {
     appState = "polling"; render();
     try {
       livenessResult = await apiGetLivenessResult(sessionId);
-      if (livenessResult.livenessImage) livenessImageURL = livenessResult.livenessImage;
+      // AWS returns referenceImage (data URL), Azure returns livenessImage
+      const img = livenessResult.livenessImage || livenessResult.referenceImage;
+      if (img) livenessImageURL = img;
       appState = "liveness_done"; render();
     } catch (e) {
       appError = e.message; appState = "error"; render();
@@ -449,7 +455,11 @@ async function start() {
   const onCancel = () => { reactRoot.unmount(); reactRoot = null; appState = "idle"; render(); };
   const onError  = (e) => {
     reactRoot.unmount(); reactRoot = null;
-    appError = e?.message ?? JSON.stringify(e, null, 2);
+    // Handle plain Error, AWS { state, error: { Message } }, or unknown shapes.
+    appError = e?.message
+      || e?.error?.Message
+      || e?.error?.message
+      || JSON.stringify(e, null, 2);
     appState = "error"; render();
   };
 

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"user-authentication/app/clients"
 	"user-authentication/app/models"
 	"user-authentication/app/repositories"
 	"user-authentication/config"
+	"user-authentication/lib/provider"
 
 	"gorm.io/gorm"
 )
@@ -38,7 +38,7 @@ type consentService struct {
 	consentRepo  repositories.ConsentRepoInterface
 	hashRepo     repositories.IdentityHashRepoInterface
 	auditRepo    repositories.AuditRepoInterface
-	faceClient   clients.FaceClientInterface
+	p            provider.IdentityProvider
 }
 
 // ConsentServiceOption configures a consentService.
@@ -54,7 +54,7 @@ func NewConsentService(opts ...ConsentServiceOption) ConsentServiceInterface {
 		consentRepo:  repositories.NewConsentRepo(),
 		hashRepo:     repositories.NewIdentityHashRepo(),
 		auditRepo:    repositories.NewAuditRepo(),
-		faceClient:   newFaceClient(),
+		p:            Active(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -90,10 +90,6 @@ func ConfigureConsentAuditRepo(r repositories.AuditRepoInterface) ConsentService
 	return func(s *consentService) { s.auditRepo = r }
 }
 
-func ConfigureConsentFaceClient(c clients.FaceClientInterface) ConsentServiceOption {
-	return func(s *consentService) { s.faceClient = c }
-}
-
 func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params *StoreConsentParams) (*StoreConsentResult, ServiceErrorInterface) {
 	cfg := config.Get()
 	collectionID := cfg.CollectionID()
@@ -118,7 +114,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 	}
 
 	// 3. Reconstruct field→value map from extracted fields.
-	var extracted models.DocumentData
+	var extracted provider.DocumentData
 	if len(docScan.ExtractedFields) > 0 {
 		_ = json.Unmarshal(docScan.ExtractedFields, &extracted)
 	}
@@ -167,13 +163,13 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 	}
 
 	// 6. Biometric duplicate check — SearchFacesByImage.
-	searchResult, searchErr := svc.faceClient.SearchFacesByImage(ctx, refBytes, collectionID)
+	searchResult, searchErr := svc.p.SearchFacesByImage(ctx, refBytes, collectionID)
 	if searchErr == nil && searchResult != nil && searchResult.Found {
 		if searchResult.MatchedUserID != params.UserID {
 			return nil, ErrConflict("This face has already been used to verify another account.")
 		}
 		// Same user re-verifying — delete old face before re-enrolling.
-		_ = svc.faceClient.DeleteFace(ctx, collectionID, searchResult.FaceID)
+		_ = svc.p.DeleteFace(ctx, collectionID, searchResult.FaceID)
 	}
 
 	// 7. Store consent_records + encrypted verified_data.
@@ -234,7 +230,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 	}
 
 	// 9. Enroll face in collection/FaceList.
-	faceID, indexErr := svc.faceClient.IndexFace(ctx, refBytes, collectionID, params.UserID)
+	faceID, indexErr := svc.p.IndexFace(ctx, refBytes, collectionID, params.UserID)
 	if indexErr == nil && faceID != "" {
 		algo := "rekognition_collection"
 		if cfg.Provider == config.ProviderAzure {

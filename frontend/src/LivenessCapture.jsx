@@ -7,10 +7,17 @@ const REGION = import.meta.env.VITE_AWS_REGION || "us-east-1";
 const CONNECTION_TIMEOUT_MS = 20_000;
 
 async function credentialProvider() {
-  return {
-    accessKeyId: import.meta.env.VITE_AWS_ACCESS_KEY_ID,
-    secretAccessKey: import.meta.env.VITE_AWS_SECRET_ACCESS_KEY,
-  };
+  const accessKeyId     = import.meta.env.VITE_AWS_ACCESS_KEY_ID;
+  const secretAccessKey = import.meta.env.VITE_AWS_SECRET_ACCESS_KEY;
+  const sessionToken    = import.meta.env.VITE_AWS_SESSION_TOKEN; // optional for temp creds
+  if (!accessKeyId || !secretAccessKey) {
+    throw new Error(
+      "AWS credentials not configured. Set VITE_AWS_ACCESS_KEY_ID and VITE_AWS_SECRET_ACCESS_KEY in frontend/.env"
+    );
+  }
+  return sessionToken
+    ? { accessKeyId, secretAccessKey, sessionToken }
+    : { accessKeyId, secretAccessKey };
 }
 
 export function LivenessCapture({ providerSessionId, onComplete, onCancel, onError }) {
@@ -43,9 +50,15 @@ export function LivenessCapture({ providerSessionId, onComplete, onCancel, onErr
     clearTimeout(timerRef.current);
     if (err?.state === "USER_CANCELLED") {
       onCancel();
-    } else {
-      onError(err);
+      return;
     }
+    // Flatten AWS error shape { state, error: { Message } } into a plain Error.
+    const rawMsg = err?.error?.Message || err?.error?.message || err?.message;
+    const state  = err?.state ?? "UNKNOWN";
+    const msg    = rawMsg
+      ? `${state}: ${rawMsg}`
+      : `Liveness check failed (${state}). Check your AWS credentials and region config.`;
+    onError(new Error(msg));
   }
 
   return (

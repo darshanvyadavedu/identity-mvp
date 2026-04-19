@@ -5,11 +5,8 @@ import (
 	"encoding/json"
 	"log"
 	"strings"
-	"sync"
 
-	"user-authentication/app/clients"
-	"user-authentication/app/models"
-	"user-authentication/config"
+	"user-authentication/lib/provider"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,50 +16,34 @@ import (
 
 const minConfidence = float64(60)
 
-var (
-	docOnce     sync.Once
-	docInstance *DocumentClient
-)
-
-// DocumentClient implements clients.DocumentClientInterface using AWS Textract.
-type DocumentClient struct {
+type documentClient struct {
 	client *textract.Client
 }
 
-// DocumentClientOption configures a DocumentClient.
-type DocumentClientOption func(*DocumentClient)
-
-// NewDocumentClient returns the singleton DocumentClient, initialising it once from config.
-func NewDocumentClient(opts ...DocumentClientOption) clients.DocumentClientInterface {
-	docOnce.Do(func() {
-		cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-			awsconfig.WithRegion(config.Get().AWSRegion))
-		if err != nil {
-			log.Fatalf("aws: load config for textract: %v", err)
-		}
-		docInstance = &DocumentClient{client: textract.NewFromConfig(cfg)}
-	})
-	for _, opt := range opts {
-		opt(docInstance)
+func newDocumentClient(region string) (*documentClient, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(),
+		awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, err
 	}
-	return docInstance
+	return &documentClient{client: textract.NewFromConfig(cfg)}, nil
 }
 
-func (c *DocumentClient) AnalyzeID(ctx context.Context, imgBytes []byte) (*models.DocumentData, []byte, error) {
+func (c *documentClient) analyzeID(ctx context.Context, imgBytes []byte) (*provider.DocumentData, []byte, error) {
 	out, err := c.client.AnalyzeID(ctx, &textract.AnalyzeIDInput{
 		DocumentPages: []txttypes.Document{
 			{Bytes: imgBytes},
 		},
 	})
 	if err != nil {
-		return &models.DocumentData{}, nil, err
+		return &provider.DocumentData{}, nil, err
 	}
 
 	raw, _ := json.Marshal(out)
-	doc := &models.DocumentData{}
+	doc := &provider.DocumentData{}
 
 	if len(out.IdentityDocuments) == 0 {
-		log.Printf("[textract] 0 identity documents returned — document may not be supported")
+		log.Printf("[textract] 0 identity documents returned")
 		return doc, raw, nil
 	}
 

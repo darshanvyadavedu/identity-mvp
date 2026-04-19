@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"user-authentication/app/clients"
 	"user-authentication/app/models"
 	"user-authentication/app/repositories"
+	"user-authentication/lib/provider"
 
 	"gorm.io/gorm"
 )
@@ -43,7 +43,7 @@ type livenessService struct {
 	checkRepo    repositories.BiometricCheckRepoInterface
 	livenessRepo repositories.LivenessResultRepoInterface
 	auditRepo    repositories.AuditRepoInterface
-	faceClient   clients.FaceClientInterface
+	p            provider.IdentityProvider
 }
 
 // LivenessServiceOption configures a livenessService.
@@ -56,7 +56,7 @@ func NewLivenessService(opts ...LivenessServiceOption) LivenessServiceInterface 
 		checkRepo:    repositories.NewBiometricCheckRepo(),
 		livenessRepo: repositories.NewLivenessResultRepo(),
 		auditRepo:    repositories.NewAuditRepo(),
-		faceClient:   newFaceClient(),
+		p:            Active(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -80,10 +80,6 @@ func ConfigureLivenessAuditRepo(r repositories.AuditRepoInterface) LivenessServi
 	return func(s *livenessService) { s.auditRepo = r }
 }
 
-func ConfigureLivenessFaceClient(c clients.FaceClientInterface) LivenessServiceOption {
-	return func(s *livenessService) { s.faceClient = c }
-}
-
 func (svc *livenessService) GetLivenessResult(ctx context.Context, db *gorm.DB, params *GetLivenessResultParams) (*GetLivenessResultOutput, ServiceErrorInterface) {
 	// 1. Load the verification session.
 	session, err := svc.sessionRepo.GetBySessionAndUser(db, params.SessionID, params.UserID)
@@ -92,7 +88,7 @@ func (svc *livenessService) GetLivenessResult(ctx context.Context, db *gorm.DB, 
 	}
 
 	// 2. Poll the provider for liveness result.
-	result, err := svc.faceClient.GetLivenessResult(ctx, session.ProviderSessionID)
+	result, err := svc.p.GetLivenessResult(ctx, session.ProviderSessionID)
 	if err != nil {
 		return nil, ErrBadGateway("get liveness results: " + err.Error())
 	}

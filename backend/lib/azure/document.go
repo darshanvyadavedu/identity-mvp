@@ -10,34 +10,17 @@ import (
 	"strings"
 	"time"
 
-	"user-authentication/app/clients"
-	"user-authentication/app/models"
-	"user-authentication/config"
+	"user-authentication/lib/provider"
 )
 
 const docIntelAPIVersion = "2024-02-29-preview"
 
-// DocumentClient implements clients.DocumentClientInterface using Azure Document Intelligence.
-type DocumentClient struct {
+type documentClient struct {
 	endpoint string
 	key      string
 }
 
-// DocumentClientOption configures a DocumentClient.
-type DocumentClientOption func(*DocumentClient)
-
-// NewDocumentClient creates an Azure DocumentClient reading credentials from config.
-func NewDocumentClient(opts ...DocumentClientOption) clients.DocumentClientInterface {
-	cfg := config.Get()
-	c := &DocumentClient{endpoint: cfg.AzureDocEndpoint, key: cfg.AzureDocKey}
-	for _, opt := range opts {
-		opt(c)
-	}
-	return c
-}
-
-func (c *DocumentClient) AnalyzeID(ctx context.Context, imgBytes []byte) (*models.DocumentData, []byte, error) {
-	// 1. Submit analysis job.
+func (c *documentClient) analyzeID(ctx context.Context, imgBytes []byte) (*provider.DocumentData, []byte, error) {
 	url := fmt.Sprintf("%s/documentintelligence/documentModels/prebuilt-idDocument:analyze?api-version=%s",
 		strings.TrimRight(c.endpoint, "/"), docIntelAPIVersion)
 
@@ -63,7 +46,6 @@ func (c *DocumentClient) AnalyzeID(ctx context.Context, imgBytes []byte) (*model
 		return nil, nil, fmt.Errorf("document intelligence: missing Operation-Location header")
 	}
 
-	// 2. Poll until succeeded (up to 30 seconds).
 	var rawResult []byte
 	for i := 0; i < 15; i++ {
 		time.Sleep(2 * time.Second)
@@ -84,20 +66,17 @@ func (c *DocumentClient) AnalyzeID(ctx context.Context, imgBytes []byte) (*model
 		if err := json.Unmarshal(rawResult, &status); err != nil {
 			return nil, nil, err
 		}
-
 		switch status.Status {
 		case "succeeded":
 			return parseDocResult(rawResult)
 		case "failed":
 			return nil, rawResult, fmt.Errorf("document intelligence analysis failed")
 		}
-		// "running" or "notStarted" — keep polling.
 	}
-
 	return nil, nil, fmt.Errorf("document intelligence: timed out waiting for result")
 }
 
-func parseDocResult(raw []byte) (*models.DocumentData, []byte, error) {
+func parseDocResult(raw []byte) (*provider.DocumentData, []byte, error) {
 	var result struct {
 		AnalyzeResult struct {
 			Documents []struct {
@@ -109,19 +88,15 @@ func parseDocResult(raw []byte) (*models.DocumentData, []byte, error) {
 			} `json:"documents"`
 		} `json:"analyzeResult"`
 	}
-
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, raw, err
 	}
-
-	doc := &models.DocumentData{}
+	doc := &provider.DocumentData{}
 	if len(result.AnalyzeResult.Documents) == 0 {
 		return doc, raw, nil
 	}
-
 	d := result.AnalyzeResult.Documents[0]
 	doc.DocumentType = d.DocType
-
 	get := func(key string) string {
 		if f, ok := d.Fields[key]; ok {
 			if f.ValueString != "" {
@@ -131,7 +106,6 @@ func parseDocResult(raw []byte) (*models.DocumentData, []byte, error) {
 		}
 		return ""
 	}
-
 	doc.FirstName = get("FirstName")
 	doc.LastName = get("LastName")
 	doc.DOB = get("DateOfBirth")
@@ -139,6 +113,5 @@ func parseDocResult(raw []byte) (*models.DocumentData, []byte, error) {
 	doc.Expiry = get("DateOfExpiration")
 	doc.IssuingCountry = get("CountryRegion")
 	doc.Address = get("Address")
-
 	return doc, raw, nil
 }
