@@ -20,8 +20,6 @@ CREATE TABLE public.users (
     password_hash    character varying(255)         NOT NULL,
     email            character varying(255)         NOT NULL,
     id_verified      boolean                        DEFAULT false,
-    retry_count      integer                        DEFAULT 0,
-    locked_until     timestamp with time zone,
     created_at       timestamp with time zone       DEFAULT now(),
     updated_at       timestamp with time zone       DEFAULT now()
 );
@@ -34,8 +32,6 @@ CREATE TABLE public.verification_sessions (
     decision_status      character varying(50)          DEFAULT 'pending',
     provider             character varying(50),
     provider_session_id  character varying(255),
-    retry_count          integer                        DEFAULT 0,
-    expires_at           timestamp with time zone,
     created_at           timestamp with time zone       DEFAULT now(),
     updated_at           timestamp with time zone       DEFAULT now()
 );
@@ -44,70 +40,36 @@ CREATE TABLE public.biometric_checks (
     check_id        uuid DEFAULT gen_random_uuid() NOT NULL,
     session_id      uuid                           NOT NULL,
     user_id         uuid                           NOT NULL,
-    check_type      character varying(50)          NOT NULL,
+    entity_type     character varying(50)          NOT NULL,
     status          character varying(50)          DEFAULT 'pending',
-    attempted_at    timestamp with time zone,
+    attempt_number  integer                        DEFAULT 1,
+    entity_value    jsonb,
+    reference_image text,
+    raw_response    jsonb,
     created_at      timestamp with time zone       DEFAULT now(),
-    updated_at      timestamp with time zone       DEFAULT now(),
-    attempt_number  integer                        DEFAULT 1
-);
-
-CREATE TABLE public.document_scan_results (
-    scan_id          uuid DEFAULT gen_random_uuid() NOT NULL,
-    check_id         uuid                           NOT NULL,
-    document_type    character varying(50),
-    issuing_country  character varying(50),
-    id_number_hmac   character varying(255),
-    extracted_fields jsonb,
-    raw_response     jsonb,
-    created_at       timestamp with time zone       DEFAULT now(),
-    updated_at       timestamp with time zone       DEFAULT now()
-);
-
-CREATE TABLE public.face_match_results (
-    match_id     uuid DEFAULT gen_random_uuid() NOT NULL,
-    check_id     uuid                           NOT NULL,
-    confidence   numeric(5,4),
-    threshold    numeric(5,4)                   DEFAULT 0.9000,
-    passed       boolean,
-    source_a     character varying(50),
-    source_b     character varying(50),
-    raw_response jsonb,
-    created_at   timestamp with time zone       DEFAULT now(),
-    updated_at   timestamp with time zone       DEFAULT now()
-);
-
-CREATE TABLE public.liveness_results (
-    result_id        uuid DEFAULT gen_random_uuid() NOT NULL,
-    check_id         uuid                           NOT NULL,
-    verdict          character varying(50)          NOT NULL,
-    confidence_score numeric(5,4),
-    failure_reason   character varying(255),
-    sdk_version      character varying(50),
-    reference_image  text,
-    raw_response     jsonb,
-    created_at       timestamp with time zone       DEFAULT now(),
-    updated_at       timestamp with time zone       DEFAULT now()
+    updated_at      timestamp with time zone       DEFAULT now()
 );
 
 CREATE TABLE public.identity_hashes (
-    hash_id    uuid DEFAULT gen_random_uuid() NOT NULL,
-    user_id    uuid                           NOT NULL,
-    field_name character varying(50)          NOT NULL,
-    hash_value character varying(255)         NOT NULL,
-    hash_algo  character varying(50)          NOT NULL,
-    created_at timestamp with time zone       DEFAULT now(),
-    updated_at timestamp with time zone       DEFAULT now()
+    hash_id     uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_id     uuid                           NOT NULL,
+    field_name  character varying(50)          NOT NULL,
+    hash_value  character varying(255)         NOT NULL,  -- HMAC(value, userID+":"+secret), user-specific
+    blind_index character varying(255),                   -- HMAC(value, secret), global dedup only
+    hash_algo   character varying(50)          NOT NULL,
+    created_at  timestamp with time zone       DEFAULT now(),
+    updated_at  timestamp with time zone       DEFAULT now()
 );
 
 CREATE TABLE public.consent_records (
     consent_id uuid DEFAULT gen_random_uuid() NOT NULL,
     user_id    uuid,
     session_id uuid,
-    field_name character varying(100),
-    consented  boolean,
-    created_at timestamp with time zone       DEFAULT now(),
-    updated_at timestamp with time zone       DEFAULT now()
+    field_name  character varying(100),
+    consented   boolean,
+    hash_value  text,
+    created_at  timestamp with time zone       DEFAULT now(),
+    updated_at  timestamp with time zone       DEFAULT now()
 );
 
 CREATE TABLE public.verified_data (
@@ -147,25 +109,11 @@ ALTER TABLE ONLY public.verification_sessions
 ALTER TABLE ONLY public.biometric_checks
     ADD CONSTRAINT biometric_checks_pkey PRIMARY KEY (check_id);
 
-ALTER TABLE ONLY public.document_scan_results
-    ADD CONSTRAINT document_scan_results_pkey PRIMARY KEY (scan_id);
-ALTER TABLE ONLY public.document_scan_results
-    ADD CONSTRAINT document_scan_results_check_id_key UNIQUE (check_id);
-
-ALTER TABLE ONLY public.face_match_results
-    ADD CONSTRAINT face_match_results_pkey PRIMARY KEY (match_id);
-ALTER TABLE ONLY public.face_match_results
-    ADD CONSTRAINT face_match_results_check_id_key UNIQUE (check_id);
-
-ALTER TABLE ONLY public.liveness_results
-    ADD CONSTRAINT liveness_results_pkey PRIMARY KEY (result_id);
-ALTER TABLE ONLY public.liveness_results
-    ADD CONSTRAINT liveness_results_check_id_key UNIQUE (check_id);
 
 ALTER TABLE ONLY public.identity_hashes
     ADD CONSTRAINT identity_hashes_pkey PRIMARY KEY (hash_id);
 ALTER TABLE ONLY public.identity_hashes
-    ADD CONSTRAINT identity_hashes_user_id_field_name_hash_value_key UNIQUE (user_id, field_name, hash_value);
+    ADD CONSTRAINT identity_hashes_field_name_hash_value_key UNIQUE (field_name, hash_value);
 
 ALTER TABLE ONLY public.consent_records
     ADD CONSTRAINT consent_records_pkey PRIMARY KEY (consent_id);
@@ -185,6 +133,7 @@ CREATE INDEX idx_sessions_user_id  ON public.verification_sessions USING btree (
 CREATE INDEX idx_sessions_status   ON public.verification_sessions USING btree (status);
 CREATE INDEX idx_checks_user_id    ON public.biometric_checks      USING btree (user_id);
 CREATE INDEX idx_ihashes_lookup    ON public.identity_hashes        USING btree (field_name, hash_value);
+CREATE INDEX idx_ihashes_blind     ON public.identity_hashes        USING btree (field_name, blind_index);
 
 
 -- =============================================================================
@@ -204,20 +153,6 @@ ALTER TABLE ONLY public.biometric_checks
     ADD CONSTRAINT biometric_checks_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES public.users(user_id) ON DELETE CASCADE;
 
--- document_scan_results → biometric_checks
-ALTER TABLE ONLY public.document_scan_results
-    ADD CONSTRAINT document_scan_results_check_id_fkey
-    FOREIGN KEY (check_id) REFERENCES public.biometric_checks(check_id) ON DELETE CASCADE;
-
--- face_match_results → biometric_checks
-ALTER TABLE ONLY public.face_match_results
-    ADD CONSTRAINT face_match_results_check_id_fkey
-    FOREIGN KEY (check_id) REFERENCES public.biometric_checks(check_id) ON DELETE CASCADE;
-
--- liveness_results → biometric_checks
-ALTER TABLE ONLY public.liveness_results
-    ADD CONSTRAINT liveness_results_check_id_fkey
-    FOREIGN KEY (check_id) REFERENCES public.biometric_checks(check_id) ON DELETE CASCADE;
 
 -- identity_hashes → users
 ALTER TABLE ONLY public.identity_hashes
