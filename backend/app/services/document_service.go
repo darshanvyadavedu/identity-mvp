@@ -131,14 +131,24 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 	entityJSON, _ := json.Marshal(docData)
 	_ = svc.checkRepo.UpdateEntityValue(db, docCheck.CheckID, entityJSON, rawDocJSON, nil)
 
-	// 5. Early duplicate check: name+DOB blind index.
+	// 5. Identity duplicate check + hash storage.
 	if docData.FirstName != "" && docData.DOB != "" {
 		combo := docData.FirstName + "|" + docData.DOB
-		nameDOBBlind := computeHMAC(combo, cfg.HMACSecret)
-		existing, findErr := svc.hashRepo.FindByFieldAndBlindIndex(db, "first_name_dob", nameDOBBlind)
-		if findErr == nil && existing != nil && existing.UserID != params.UserID {
-			return nil, ErrConflict("Identity already exists: this document's name and date of birth are linked to another account.")
+		blindIdx := computeHMAC(combo, cfg.HMACSecret)
+		existing, findErr := svc.hashRepo.FindByFieldAndBlindIndex(db, "first_name_dob", blindIdx)
+		if findErr == nil && existing != nil {
+			if existing.UserID != params.UserID {
+				return nil, ErrConflict("An account is already verified with this identity.")
+			}
+			return nil, ErrConflict("This account has already been verified.")
 		}
+		_ = svc.hashRepo.Create(db, &models.IdentityHash{
+			UserID:     params.UserID,
+			FieldName:  "first_name_dob",
+			HashValue:  computeHMAC(combo, params.UserID+":"+cfg.HMACSecret),
+			BlindIndex: blindIdx,
+			HashAlgo:   "hmac-sha256",
+		})
 	}
 
 	// 6. Face match — create check and compare faces.

@@ -34,7 +34,6 @@ type consentService struct {
 	sessionRepo repositories.VerificationSessionRepoInterface
 	checkRepo   repositories.BiometricCheckRepoInterface
 	consentRepo repositories.ConsentRepoInterface
-	hashRepo    repositories.IdentityHashRepoInterface
 	auditRepo   repositories.AuditRepoInterface
 	p           provider.IdentityProvider
 }
@@ -48,7 +47,6 @@ func NewConsentService(opts ...ConsentServiceOption) ConsentServiceInterface {
 		sessionRepo: repositories.NewVerificationSessionRepo(),
 		checkRepo:   repositories.NewBiometricCheckRepo(),
 		consentRepo: repositories.NewConsentRepo(),
-		hashRepo:    repositories.NewIdentityHashRepo(),
 		auditRepo:   repositories.NewAuditRepo(),
 		p:           Active(),
 	}
@@ -68,10 +66,6 @@ func ConfigureConsentCheckRepo(r repositories.BiometricCheckRepoInterface) Conse
 
 func ConfigureConsentRepo(r repositories.ConsentRepoInterface) ConsentServiceOption {
 	return func(s *consentService) { s.consentRepo = r }
-}
-
-func ConfigureConsentHashRepo(r repositories.IdentityHashRepoInterface) ConsentServiceOption {
-	return func(s *consentService) { s.hashRepo = r }
 }
 
 func ConfigureConsentAuditRepo(r repositories.AuditRepoInterface) ConsentServiceOption {
@@ -111,24 +105,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		"address":         extracted.Address,
 	}
 
-	// 3. Identity duplicate check via first_name+DOB blind index.
-	// Relies on the person, not the document — prevents the same person verifying with different documents.
-	if extracted.FirstName != "" && extracted.DOB != "" {
-		combo := extracted.FirstName + "|" + extracted.DOB
-		blindIdx := computeHMAC(combo, cfg.HMACSecret)
-		existing, findErr := svc.hashRepo.FindByFieldAndBlindIndex(db, "first_name_dob", blindIdx)
-		if findErr == nil && existing != nil {
-			if existing.UserID != params.UserID {
-				return nil, ErrConflict("An account is already verified with this identity.")
-			}
-			// Same user re-verifying — clean up old identity data.
-			_ = svc.hashRepo.DeleteByUser(db, params.UserID)
-			_ = svc.consentRepo.DeleteConsentByUser(db, params.UserID)
-			_ = svc.consentRepo.DeleteVerifiedDataByUser(db, params.UserID)
-		}
-	}
-
-	// 4. Load liveness reference image from biometric check.
+	// 3. Load liveness reference image from biometric check.
 	livenessCheck, err := svc.checkRepo.GetBySessionAndType(db, params.SessionID, models.EntityTypeLiveness)
 	if err != nil {
 		return nil, ErrInternalServer("liveness check not found")
@@ -183,22 +160,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 		}
 	}
 
-	// 7. Store identity hash — first_name+DOB anchors identity to the person, not the document.
-	// hash_value  = HMAC(value, userID+":"+secret) — user-specific, private
-	// blind_index = HMAC(value, secret)            — global, dedup only
-	if extracted.FirstName != "" && extracted.DOB != "" {
-		combo := extracted.FirstName + "|" + extracted.DOB
-		_ = svc.hashRepo.DeleteByUserAndField(db, params.UserID, "first_name_dob")
-		_ = svc.hashRepo.Create(db, &models.IdentityHash{
-			UserID:     params.UserID,
-			FieldName:  "first_name_dob",
-			HashValue:  computeHMAC(combo, params.UserID+":"+cfg.HMACSecret),
-			BlindIndex: computeHMAC(combo, cfg.HMACSecret),
-			HashAlgo:   "hmac-sha256",
-		})
-	}
-
-	// 8. Enroll face in collection/FaceList.
+	// 7. Enroll face in collection/FaceList.
 	_, _ = svc.p.IndexFace(ctx, refBytes, collectionID, params.UserID)
 
 	// 9. Audit log (best-effort).
