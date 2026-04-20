@@ -6,14 +6,21 @@ import "os"
 type Provider string
 
 const (
-	ProviderAWS   Provider = "aws"
-	ProviderAzure Provider = "azure"
+	ProviderAWS     Provider = "aws"
+	ProviderAzure   Provider = "azure"
+	ProviderEasyOCR Provider = "easyocr"
 )
 
 // Config holds all application configuration loaded from environment variables.
 type Config struct {
+	// FaceProvider selects the liveness + face-matching backend (PROVIDER env var).
 	Provider Provider
-	Port     string
+
+	// DocProvider selects the document OCR backend (DOC_PROVIDER env var).
+	// Defaults to the same value as Provider when not set.
+	DocProvider Provider
+
+	Port string
 
 	// Database
 	DatabaseURL string
@@ -38,6 +45,9 @@ type Config struct {
 	AzureDocEndpoint  string
 	AzureDocKey       string
 	AzureFaceListID   string
+
+	// EasyOCR
+	EasyOCRServiceURL string
 }
 
 var cfg *Config
@@ -51,9 +61,11 @@ func Get() *Config {
 }
 
 func load() *Config {
+	faceProvider := Provider(getenv("PROVIDER", "aws"))
 	return &Config{
-		Provider: Provider(getenv("PROVIDER", "aws")),
-		Port:     getenv("PORT", "8080"),
+		Provider:    faceProvider,
+		DocProvider: Provider(getenv("DOC_PROVIDER", string(faceProvider))),
+		Port:        getenv("PORT", "8080"),
 
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		DBHost:      getenv("DB_HOST", "localhost"),
@@ -74,6 +86,8 @@ func load() *Config {
 		AzureDocEndpoint:  os.Getenv("AZURE_DOCUMENT_ENDPOINT"),
 		AzureDocKey:       os.Getenv("AZURE_DOCUMENT_KEY"),
 		AzureFaceListID:   getenv("AZURE_FACE_LIST_ID", "identity-verification"),
+
+		EasyOCRServiceURL: getenv("EASYOCR_SERVICE_URL", "http://localhost:8090"),
 	}
 }
 

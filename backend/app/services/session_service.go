@@ -35,7 +35,7 @@ type sessionService struct {
 	sessionRepo repositories.VerificationSessionRepoInterface
 	checkRepo   repositories.BiometricCheckRepoInterface
 	auditRepo   repositories.AuditRepoInterface
-	p           provider.IdentityProvider
+	face        provider.FaceProvider
 }
 
 // SessionServiceOption configures a sessionService.
@@ -47,7 +47,7 @@ func NewSessionService(opts ...SessionServiceOption) SessionServiceInterface {
 		sessionRepo: repositories.NewVerificationSessionRepo(),
 		checkRepo:   repositories.NewBiometricCheckRepo(),
 		auditRepo:   repositories.NewAuditRepo(),
-		p:           Active(),
+		face:        ActiveFace(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -71,7 +71,7 @@ func (svc *sessionService) CreateSession(ctx context.Context, db *gorm.DB, param
 	provider := string(config.Get().Provider)
 
 	// 1. Create provider liveness session.
-	providerSession, err := svc.p.CreateLivenessSession(ctx, params.UserID)
+	providerSession, err := svc.face.CreateLivenessSession(ctx, params.UserID)
 	if err != nil {
 		return nil, ErrBadGateway("create liveness session: " + err.Error())
 	}
