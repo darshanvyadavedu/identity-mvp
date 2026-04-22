@@ -2,9 +2,9 @@ package provider
 
 import "context"
 
-// IdentityProvider is the single interface every identity provider must implement.
-// To add a new provider (Google, Onfido, etc.) implement this interface in lib/<name>/.
-type IdentityProvider interface {
+// FaceProvider handles liveness checks and all face operations.
+// Implemented by the AWS and Azure providers.
+type FaceProvider interface {
 	// CreateLivenessSession starts a liveness session and returns the tokens
 	// the frontend SDK needs to run the check.
 	CreateLivenessSession(ctx context.Context, userID string) (*CreateSessionResult, error)
@@ -25,12 +25,23 @@ type IdentityProvider interface {
 	// DeleteFace removes a face from the collection/list.
 	DeleteFace(ctx context.Context, collectionID, faceID string) error
 
-	// AnalyzeID extracts structured identity fields from an ID document image.
-	AnalyzeID(ctx context.Context, imgBytes []byte) (*DocumentData, []byte, error)
-
 	// EnsureResources creates provider-specific resources (face collections,
 	// face lists, etc.) on first use. Implementations must be idempotent.
 	EnsureResources(ctx context.Context) error
+}
+
+// DocumentProvider handles document OCR and structured field extraction.
+// Implemented by AWS, Azure, and EasyOCR providers.
+type DocumentProvider interface {
+	// AnalyzeID extracts structured identity fields from an ID document image.
+	AnalyzeID(ctx context.Context, imgBytes []byte) (*DocumentData, []byte, error)
+}
+
+// IdentityProvider combines FaceProvider and DocumentProvider for providers
+// that support both (AWS, Azure). Prefer the narrower interfaces in service code.
+type IdentityProvider interface {
+	FaceProvider
+	DocumentProvider
 }
 
 // ── Result types ──────────────────────────────────────────────────────────────

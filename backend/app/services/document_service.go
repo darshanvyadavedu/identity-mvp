@@ -45,7 +45,8 @@ type documentService struct {
 	checkRepo   repositories.BiometricCheckRepoInterface
 	hashRepo    repositories.IdentityHashRepoInterface
 	auditRepo   repositories.AuditRepoInterface
-	p           provider.IdentityProvider
+	doc         provider.DocumentProvider
+	face        provider.FaceProvider
 }
 
 // DocumentServiceOption configures a documentService.
@@ -58,7 +59,8 @@ func NewDocumentService(opts ...DocumentServiceOption) DocumentServiceInterface 
 		checkRepo:   repositories.NewBiometricCheckRepo(),
 		hashRepo:    repositories.NewIdentityHashRepo(),
 		auditRepo:   repositories.NewAuditRepo(),
-		p:           Active(),
+		doc:         ActiveDoc(),
+		face:        ActiveFace(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -121,7 +123,7 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 	}
 
 	// 4. OCR — AnalyzeID via provider.
-	docData, rawDocJSON, docExtractErr := svc.p.AnalyzeID(ctx, params.DocBytes)
+	docData, rawDocJSON, docExtractErr := svc.doc.AnalyzeID(ctx, params.DocBytes)
 	docCheckStatus := models.CheckStatusSucceeded
 	if docExtractErr != nil {
 		docCheckStatus = models.CheckStatusFailed
@@ -164,7 +166,7 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 		return nil, ErrInternalServer("create face match check: " + err.Error())
 	}
 
-	compareResult, fmErr := svc.p.CompareFaces(ctx, refBytes, params.DocBytes)
+	compareResult, fmErr := svc.face.CompareFaces(ctx, refBytes, params.DocBytes)
 	var similarity float64
 	var passed bool
 	var rawFMJSON []byte

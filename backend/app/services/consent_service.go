@@ -35,7 +35,7 @@ type consentService struct {
 	checkRepo   repositories.BiometricCheckRepoInterface
 	consentRepo repositories.ConsentRepoInterface
 	auditRepo   repositories.AuditRepoInterface
-	p           provider.IdentityProvider
+	face        provider.FaceProvider
 }
 
 // ConsentServiceOption configures a consentService.
@@ -48,7 +48,7 @@ func NewConsentService(opts ...ConsentServiceOption) ConsentServiceInterface {
 		checkRepo:   repositories.NewBiometricCheckRepo(),
 		consentRepo: repositories.NewConsentRepo(),
 		auditRepo:   repositories.NewAuditRepo(),
-		p:           Active(),
+		face:        ActiveFace(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -116,13 +116,13 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 	}
 
 	// 5. Biometric duplicate check — SearchFacesByImage.
-	searchResult, searchErr := svc.p.SearchFacesByImage(ctx, refBytes, collectionID)
+	searchResult, searchErr := svc.face.SearchFacesByImage(ctx, refBytes, collectionID)
 	if searchErr == nil && searchResult != nil && searchResult.Found {
 		if searchResult.MatchedUserID != params.UserID {
 			return nil, ErrConflict("This face has already been used to verify another account.")
 		}
 		// Same user re-verifying — delete old face before re-enrolling.
-		_ = svc.p.DeleteFace(ctx, collectionID, searchResult.FaceID)
+		_ = svc.face.DeleteFace(ctx, collectionID, searchResult.FaceID)
 	}
 
 	// 6. Store consent_records + encrypted verified_data.
@@ -161,7 +161,7 @@ func (svc *consentService) StoreConsent(ctx context.Context, db *gorm.DB, params
 	}
 
 	// 7. Enroll face in collection/FaceList.
-	_, _ = svc.p.IndexFace(ctx, refBytes, collectionID, params.UserID)
+	_, _ = svc.face.IndexFace(ctx, refBytes, collectionID, params.UserID)
 
 	// 9. Audit log (best-effort).
 	details, _ := json.Marshal(map[string]any{

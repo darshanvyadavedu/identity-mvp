@@ -42,7 +42,7 @@ type livenessService struct {
 	sessionRepo repositories.VerificationSessionRepoInterface
 	checkRepo   repositories.BiometricCheckRepoInterface
 	auditRepo   repositories.AuditRepoInterface
-	p           provider.IdentityProvider
+	face        provider.FaceProvider
 }
 
 // LivenessServiceOption configures a livenessService.
@@ -54,7 +54,7 @@ func NewLivenessService(opts ...LivenessServiceOption) LivenessServiceInterface 
 		sessionRepo: repositories.NewVerificationSessionRepo(),
 		checkRepo:   repositories.NewBiometricCheckRepo(),
 		auditRepo:   repositories.NewAuditRepo(),
-		p:           Active(),
+		face:        ActiveFace(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -82,7 +82,7 @@ func (svc *livenessService) GetLivenessResult(ctx context.Context, db *gorm.DB, 
 	}
 
 	// 2. Poll the provider for liveness result.
-	result, err := svc.p.GetLivenessResult(ctx, session.ProviderSessionID)
+	result, err := svc.face.GetLivenessResult(ctx, session.ProviderSessionID)
 	if err != nil {
 		return nil, ErrBadGateway("get liveness results: " + err.Error())
 	}
