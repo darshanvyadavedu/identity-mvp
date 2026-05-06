@@ -21,6 +21,7 @@ type GetLivenessResultParams struct {
 type GetLivenessResultOutput struct {
 	SessionID          string
 	Complete           bool   // false = still in progress; caller should return status as-is
+	Passed             bool   // true only when verdict == "live"
 	LivenessStatus     string // raw provider status
 	LivenessConfidence float64
 	ReferenceImage     string
@@ -150,6 +151,7 @@ func (svc *livenessService) GetLivenessResult(ctx context.Context, db *gorm.DB, 
 	return &GetLivenessResultOutput{
 		SessionID:          params.SessionID,
 		Complete:           true,
+		Passed:             verdict == "live",
 		LivenessStatus:     result.ProviderStatus,
 		LivenessConfidence: confidence,
 		ReferenceImage:     result.ReferenceImage,

@@ -28,7 +28,9 @@ export function AzureLivenessCapture({ authToken, onComplete, onCancel, onError 
       .catch((err) => {
         if (!doneRef.current) {
           doneRef.current = true;
-          const msg = err?.message ?? String(err);
+          const msg = err?.message
+            ?? err?.error?.message
+            ?? (typeof err === "object" ? JSON.stringify(err) : String(err));
           if (/cancel/i.test(msg)) {
             onCancel();
           } else {

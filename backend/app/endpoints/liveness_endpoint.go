@@ -64,6 +64,7 @@ func (e *livenessEndpoint) getLivenessResult(req *web.Request) web.Response {
 
 	return web.NewResponse(map[string]any{
 		"sessionId":          result.SessionID,
+		"passed":             result.Passed,
 		"livenessStatus":     result.LivenessStatus,
 		"livenessConfidence": result.LivenessConfidence,
 		"referenceImage":     result.ReferenceImage,
