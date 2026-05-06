@@ -124,6 +124,9 @@ func (svc *documentService) UploadDocument(ctx context.Context, db *gorm.DB, par
 
 	// 4. OCR — AnalyzeID via provider.
 	docData, rawDocJSON, docExtractErr := svc.doc.AnalyzeID(ctx, params.DocBytes)
+	if docData == nil {
+		docData = &provider.DocumentData{}
+	}
 	docCheckStatus := models.CheckStatusSucceeded
 	if docExtractErr != nil {
 		docCheckStatus = models.CheckStatusFailed

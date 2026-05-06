@@ -48,6 +48,24 @@ type Config struct {
 
 	// EasyOCR
 	EasyOCRServiceURL string
+
+	// SMTP — used by profession work-email OTP flow.
+	// Leave SMTPHost empty to run in dev mode (OTP returned in API response).
+	SMTPHost     string
+	SMTPPort     string
+	SMTPFrom     string
+	SMTPUsername string
+	SMTPPassword string
+
+	// LinkedIn OAuth — used by profession LinkedIn verification.
+	// Leave LinkedInClientID empty to disable the LinkedIn endpoint.
+	LinkedInClientID     string
+	LinkedInClientSecret string
+	LinkedInRedirectURI  string
+
+	// Supabase — SupabaseJWTSecret is the JWT secret from the Supabase dashboard
+	// (Settings → API → JWT Secret). Leave empty to skip JWT validation in dev mode.
+	SupabaseJWTSecret string
 }
 
 var cfg *Config
@@ -88,6 +106,18 @@ func load() *Config {
 		AzureFaceListID:   getenv("AZURE_FACE_LIST_ID", "identity-verification"),
 
 		EasyOCRServiceURL: getenv("EASYOCR_SERVICE_URL", "http://localhost:8090"),
+
+		SMTPHost:     os.Getenv("SMTP_HOST"),
+		SMTPPort:     getenv("SMTP_PORT", "587"),
+		SMTPFrom:     os.Getenv("SMTP_FROM"),
+		SMTPUsername: os.Getenv("SMTP_USERNAME"),
+		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
+
+		LinkedInClientID:     os.Getenv("LINKEDIN_CLIENT_ID"),
+		LinkedInClientSecret: os.Getenv("LINKEDIN_CLIENT_SECRET"),
+		LinkedInRedirectURI:  os.Getenv("LINKEDIN_REDIRECT_URI"),
+
+		SupabaseJWTSecret: os.Getenv("SUPABASE_JWT_SECRET"),
 	}
 }
 

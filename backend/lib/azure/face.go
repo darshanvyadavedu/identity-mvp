@@ -101,6 +101,7 @@ func (c *faceClient) getLivenessResult(ctx context.Context, providerSessionID st
 		latest := attempts[len(attempts)-1]
 		if latest.Result != nil {
 			sessionImageID = latest.Result.SessionImageID
+			log.Printf("[azure] livenessDecision=%q attemptStatus=%q", latest.Result.LivenessDecision, latest.AttemptStatus)
 			if latest.Result.LivenessDecision == "realface" {
 				verdict = "live"
 			} else {
@@ -108,6 +109,7 @@ func (c *faceClient) getLivenessResult(ctx context.Context, providerSessionID st
 			}
 		}
 		if latest.Error != nil {
+			log.Printf("[azure] attempt error: code=%q message=%q", latest.Error.Code, latest.Error.Message)
 			verdict = "failed"
 		}
 	}

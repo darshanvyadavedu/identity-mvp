@@ -13,6 +13,23 @@ func setUUID(id *string) {
 	}
 }
 
+// ── User ──────────────────────────────────────────────────────────────────────
+
+// User mirrors the public.users table. When Supabase Auth is active, user_id
+// equals the Supabase auth.users UUID and custom_username is set to the same
+// value. username_hash and password_hash are left empty because authentication
+// is delegated to Supabase.
+type User struct {
+	UserID         string    `gorm:"primaryKey;column:user_id"`
+	CustomUsername string    `gorm:"column:custom_username;not null;uniqueIndex"`
+	UsernameHash   string    `gorm:"column:username_hash;not null"`
+	PasswordHash   string    `gorm:"column:password_hash;not null"`
+	Email          string    `gorm:"column:email;not null"`
+	IDVerified     bool      `gorm:"column:id_verified;default:false"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 // ── VerificationSession ───────────────────────────────────────────────────────
 
 type VerificationSession struct {
